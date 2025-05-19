@@ -19,35 +19,43 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-.pytest_cache/
-.coverage
+
+# Unit test / coverage reports
 htmlcov/
 .tox/
-.nox/
-.hypothesis/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
 
-# Poetry
-.venv/
-poetry.lock
-
-# Docker
-.dockerignore
-
-# Virtual Environment
+# Virtual Environments
+env/
 venv/
 ENV/
-env/
+env.bak/
+venv.bak/
 
-# IDE
+# Environment variables
+.env
+
+# IDE files
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# OS specific
 .DS_Store
 
 # Project specific
 runs/
-!examples/sample_run/
-.env
-.openai-api-key
+tests/test_output/
+.pytest_cache/
+
+# Docker
+.dockerignore
+
+# Logs
 *.log

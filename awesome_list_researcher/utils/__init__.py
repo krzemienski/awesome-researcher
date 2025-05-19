@@ -1,3 +1,3 @@
 """
-Utility functions for the Awesome-List Researcher.
+Utilities for the Awesome-List Researcher.
 """

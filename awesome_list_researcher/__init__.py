@@ -1,5 +1,5 @@
 """
-Awesome-List Researcher - Automatically find and suggest new resources for GitHub Awesome Lists.
+Awesome-List Researcher: Find new resources for Awesome Lists.
 """
 
 __version__ = "0.1.0"

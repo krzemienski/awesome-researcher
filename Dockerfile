@@ -32,6 +32,6 @@ RUN poetry install --no-interaction --no-ansi --no-dev
 COPY . .
 
 # Create directory for output
-RUN mkdir -p runs examples/sample_run
+RUN mkdir -p runs
 
 ENTRYPOINT ["./build-and-run.sh"]

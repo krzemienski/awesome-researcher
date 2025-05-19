@@ -1,98 +1,166 @@
 """
-GitHub utilities for interacting with repositories and README files.
+GitHub utilities for fetching content without using the GitHub API.
 """
 
 import logging
 import re
-from typing import Dict, Optional, Tuple
+import time
+from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-import httpx
+import requests
 from tenacity import (
     retry,
-    retry_if_exception_type,
     stop_after_attempt,
-    wait_exponential
+    wait_exponential,
+    retry_if_exception_type
 )
+
+
+def parse_github_url(url: str) -> Tuple[str, str]:
+    """
+    Parse a GitHub repository URL into owner and repo name.
+
+    Args:
+        url: GitHub repository URL
+
+    Returns:
+        Tuple of (owner, repo)
+
+    Raises:
+        ValueError: If the URL is not a valid GitHub repository URL
+    """
+    # Remove trailing slashes
+    url = url.rstrip('/')
+
+    # Try parsing as a github.com URL
+    parsed = urlparse(url)
+    if parsed.netloc == 'github.com':
+        path_parts = [p for p in parsed.path.split('/') if p]
+        if len(path_parts) >= 2:
+            return path_parts[0], path_parts[1]
+
+    # Try parsing as a format like "owner/repo"
+    if '/' in url and ' ' not in url:
+        parts = url.split('/')
+        if len(parts) == 2:
+            return parts[0], parts[1]
+
+    raise ValueError(
+        f"Invalid GitHub repository URL: {url}. "
+        f"Expected format: https://github.com/owner/repo"
+    )
 
 
 class GitHubAPI:
     """
-    Utility class for interacting with GitHub repositories.
+    Utility for interacting with GitHub repositories without using the API.
     """
 
     def __init__(self, logger: logging.Logger):
         """
-        Initialize the GitHub API utility.
+        Initialize the GitHub API client.
 
         Args:
             logger: Logger instance
         """
         self.logger = logger
-        self.client = httpx.Client(timeout=30.0)
-        self.common_branches = ["main", "master"]
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Awesome-List-Researcher/0.1.0"
+        })
 
     @retry(
-        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+        retry=retry_if_exception_type((requests.exceptions.RequestException)),
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=60),
-        stop=stop_after_attempt(5)
+        before_sleep=lambda retry_state: None  # No callback needed
     )
-    def get_raw_readme(self, owner: str, repo: str, branch: Optional[str] = None) -> str:
+    def _make_request(self, url: str) -> Optional[str]:
+        """
+        Make a request with retries and backoff.
+
+        Args:
+            url: URL to request
+
+        Returns:
+            Response text if successful, None otherwise
+        """
+        try:
+            response = self.session.get(url, timeout=10)
+
+            # Log rate limits if present in headers
+            if 'X-RateLimit-Remaining' in response.headers:
+                remaining = response.headers.get('X-RateLimit-Remaining')
+                limit = response.headers.get('X-RateLimit-Limit')
+                reset = response.headers.get('X-RateLimit-Reset')
+                self.logger.debug(
+                    f"GitHub rate limits: {remaining}/{limit}, "
+                    f"resets at {time.ctime(int(reset) if reset else 0)}"
+                )
+
+            # Handle rate limiting
+            if response.status_code == 429:
+                reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
+                wait_time = max(1, reset_time - int(time.time()))
+                self.logger.warning(
+                    f"GitHub rate limit exceeded. Waiting {wait_time} seconds."
+                )
+                time.sleep(wait_time)
+                return None
+
+            # Handle other errors
+            if response.status_code >= 400:
+                self.logger.warning(
+                    f"GitHub request failed: {response.status_code} for {url}"
+                )
+                return None
+
+            return response.text
+
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Request error: {str(e)}")
+            raise
+
+    def get_raw_readme(self, owner: str, repo: str) -> str:
         """
         Get the raw README.md content from a GitHub repository.
-        Tries common branch names and file name variations if branch is not specified.
+
+        Tries different branches in order: master, main, HEAD.
 
         Args:
             owner: Repository owner
             repo: Repository name
-            branch: Branch name (optional)
 
         Returns:
             Raw README.md content
-        """
-        if branch:
-            branches_to_try = [branch]
-        else:
-            branches_to_try = self.common_branches
 
-        readme_formats = [
-            # Standard formats with branch name
-            lambda b: f"https://raw.githubusercontent.com/{owner}/{repo}/{b}/README.md",
-            lambda b: f"https://raw.githubusercontent.com/{owner}/{repo}/{b}/readme.md",
-            # Using refs/heads format
-            lambda b: f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/{b}/README.md",
-            lambda b: f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/{b}/readme.md",
+        Raises:
+            ValueError: If README.md cannot be found
+        """
+        urls = [
+            f"https://raw.githubusercontent.com/{owner}/{repo}/master/README.md",
+            f"https://raw.githubusercontent.com/{owner}/{repo}/main/README.md",
+            f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md",
         ]
 
-        readme_content = None
-        last_error = None
+        for url in urls:
+            self.logger.info(f"Trying to fetch README from {url}")
+            content = self._make_request(url)
+            if content:
+                self.logger.info(f"Successfully fetched README from {url}")
+                return content
 
-        for try_branch in branches_to_try:
-            for format_func in readme_formats:
-                raw_url = format_func(try_branch)
-
-                self.logger.info(f"Fetching README from {raw_url}")
-
-                try:
-                    response = self.client.get(raw_url)
-                    response.raise_for_status()
-                    readme_content = response.text
-                    self.logger.info(f"Successfully fetched README.md ({len(readme_content)} bytes)")
-                    return readme_content
-                except Exception as e:
-                    last_error = e
-                    self.logger.warning(f"Failed to fetch README from {raw_url}: {str(e)}")
-
-        # If we get here, all attempts failed
-        if last_error:
-            raise last_error
-        else:
-            raise ValueError(f"Could not fetch README for {owner}/{repo}")
+        raise ValueError(
+            f"Could not find README.md in {owner}/{repo} repository. "
+            f"Tried branches: master, main, HEAD."
+        )
 
     @retry(
-        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+        retry=retry_if_exception_type((requests.exceptions.RequestException)),
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=60),
-        stop=stop_after_attempt(5)
+        before_sleep=lambda retry_state: None  # No callback needed
     )
     def get_repo_stars(self, owner: str, repo: str) -> int:
         """
@@ -107,42 +175,13 @@ class GitHubAPI:
         """
         url = f"https://api.github.com/repos/{owner}/{repo}"
 
-        response = self.client.get(url)
+        response = self.session.get(url)
         response.raise_for_status()
 
         data = response.json()
         stars = data.get("stargazers_count", 0)
 
         return stars
-
-
-def parse_github_url(url: str) -> Tuple[str, str]:
-    """
-    Parse a GitHub URL to extract owner and repository name.
-
-    Args:
-        url: GitHub repository URL
-
-    Returns:
-        Tuple of (owner, repo)
-
-    Raises:
-        ValueError: If the URL is not a valid GitHub repository URL
-    """
-    parsed = urlparse(url)
-
-    if parsed.netloc != "github.com":
-        raise ValueError(f"Not a GitHub URL: {url}")
-
-    path_parts = [p for p in parsed.path.split("/") if p]
-
-    if len(path_parts) < 2:
-        raise ValueError(f"Invalid GitHub repository URL: {url}")
-
-    owner = path_parts[0]
-    repo = path_parts[1]
-
-    return owner, repo
 
 
 def is_github_url(url: str) -> bool:

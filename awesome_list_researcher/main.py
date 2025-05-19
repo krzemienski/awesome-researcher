@@ -46,11 +46,10 @@ class AppConfig:
     """Configuration for the Awesome-List Researcher."""
     repo_url: str
     wall_time: int = 600
-    cost_ceiling: float = 5.0
-    min_stars: int = 100
+    cost_ceiling: float = 10.0
     output_dir: str = "runs"
     seed: Optional[int] = None
-    model_planner: str = "gpt-4.1-mini"
+    model_planner: str = "gpt-4.1"
     model_researcher: str = "o3"
     model_validator: str = "o3"
 
@@ -76,15 +75,8 @@ def parse_args() -> AppConfig:
     parser.add_argument(
         "--cost_ceiling",
         type=float,
-        default=5.0,
-        help="Maximum OpenAI API cost in USD (default: 5.0)"
-    )
-
-    parser.add_argument(
-        "--min_stars",
-        type=int,
-        default=100,
-        help="Minimum GitHub stars for resources (default: 100)"
+        default=10.0,
+        help="Maximum OpenAI API cost in USD (default: 10.0)"
     )
 
     parser.add_argument(
@@ -104,8 +96,8 @@ def parse_args() -> AppConfig:
     parser.add_argument(
         "--model_planner",
         type=str,
-        default="gpt-4.1-mini",
-        help="Model for planning research queries (default: gpt-4.1-mini)"
+        default="gpt-4.1",
+        help="Model for planning research queries (default: gpt-4.1)"
     )
 
     parser.add_argument(
@@ -128,7 +120,6 @@ def parse_args() -> AppConfig:
         repo_url=args.repo_url,
         wall_time=args.wall_time,
         cost_ceiling=args.cost_ceiling,
-        min_stars=args.min_stars,
         output_dir=args.output_dir,
         seed=args.seed,
         model_planner=args.model_planner,
@@ -169,7 +160,6 @@ def main():
     logger.info(f"  Repo URL: {config.repo_url}")
     logger.info(f"  Wall time: {config.wall_time} seconds")
     logger.info(f"  Cost ceiling: ${config.cost_ceiling}")
-    logger.info(f"  Minimum stars: {config.min_stars}")
     logger.info(f"  Output directory: {run_dir}")
     logger.info(f"  Seed: {config.seed or 'random'}")
     logger.info(f"  Model (planner): {config.model_planner}")
@@ -347,8 +337,7 @@ def main():
             model=config.model_validator,
             api_client=client,
             cost_guard=cost_guard,
-            logger=logger,
-            min_stars=config.min_stars
+            logger=logger
         )
 
         valid_candidates, invalid_candidates = validator.validate_candidates(unique_candidates)

@@ -1,87 +1,121 @@
 """
-Logging utilities for structured logging with ISO 8601 timestamps.
+Logging utilities for the Awesome-List Researcher.
 """
 
 import json
 import logging
-import sys
+import os
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
 
-class StructuredFormatter(logging.Formatter):
+class ISO8601Formatter(logging.Formatter):
     """
-    Custom formatter that formats logs as JSON with ISO 8601 timestamps.
+    Log formatter that includes ISO 8601 timestamps.
     """
+    def formatTime(self, record, datefmt=None):
+        """
+        Format time in ISO 8601 format.
+        """
+        return datetime.fromtimestamp(record.created).isoformat()
 
-    def format(self, record: logging.LogRecord) -> str:
-        """Format the log record as a JSON string."""
-        iso_time = datetime.utcnow().isoformat() + 'Z'
 
-        log_data = {
-            'timestamp': iso_time,
-            'level': record.levelname,
-            'message': record.getMessage(),
-            'module': record.module,
-            'line': record.lineno,
+class APICallLogRecord:
+    """
+    Log record for API calls with full prompt and completion text.
+    """
+    def __init__(
+        self,
+        agent_id: str,
+        model: str,
+        prompt: str,
+        completion: str,
+        tokens: int,
+        cost_usd: float,
+        latency: float
+    ):
+        """
+        Initialize a log record for an API call.
+
+        Args:
+            agent_id: ID of the agent making the call
+            model: Model used for the call
+            prompt: Full prompt text
+            completion: Full completion text
+            tokens: Total tokens used
+            cost_usd: Cost in USD
+            latency: Latency in seconds
+        """
+        self.timestamp = datetime.now().isoformat()
+        self.agent_id = agent_id
+        self.model = model
+        self.prompt = prompt
+        self.completion = completion
+        self.tokens = tokens
+        self.cost_usd = cost_usd
+        self.latency = latency
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert to dictionary.
+
+        Returns:
+            Dictionary representation of the log record
+        """
+        return {
+            "timestamp": self.timestamp,
+            "agent_id": self.agent_id,
+            "model": self.model,
+            "tokens": self.tokens,
+            "cost_usd": self.cost_usd,
+            "latency": self.latency,
+            "prompt": self.prompt,
+            "completion": self.completion
         }
 
-        # Add extra fields if present
-        if hasattr(record, 'tokens'):
-            log_data['tokens'] = record.tokens
-        if hasattr(record, 'cost_usd'):
-            log_data['cost_usd'] = record.cost_usd
-        if hasattr(record, 'event'):
-            log_data['event'] = record.event
-        if hasattr(record, 'model'):
-            log_data['model'] = record.model
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """
+        Convert to JSON string.
 
-        # Add any additional custom fields from record.__dict__
-        for key, value in record.__dict__.items():
-            if key not in ['args', 'exc_info', 'exc_text', 'stack_info', 'lineno',
-                          'funcName', 'created', 'msecs', 'relativeCreated',
-                          'levelname', 'levelno', 'pathname', 'filename',
-                          'module', 'name', 'thread', 'threadName', 'processName',
-                          'process', 'message', 'msg', 'tokens', 'cost_usd', 'event', 'model']:
-                if not key.startswith('_'):
-                    log_data[key] = value
+        Args:
+            indent: JSON indentation level
 
-        return json.dumps(log_data)
+        Returns:
+            JSON string representation of the log record
+        """
+        return json.dumps(self.to_dict(), indent=indent)
 
 
-def setup_logger(
-    name: str,
-    log_file: Optional[str] = None,
-    level: int = logging.INFO
-) -> logging.Logger:
+def setup_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
     """
-    Set up and configure a logger with the structured formatter.
+    Set up a logger with ISO 8601 timestamps and console/file handlers.
 
     Args:
-        name: Name of the logger
-        log_file: Path to the log file (optional)
-        level: Log level
+        name: Logger name
+        log_file: Path to log file (optional)
 
     Returns:
         Configured logger
     """
     logger = logging.getLogger(name)
-    logger.setLevel(level)
+    logger.setLevel(logging.INFO)
 
-    # Remove existing handlers if any
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-
-    # Create formatter
-    formatter = StructuredFormatter()
+    # Create ISO 8601 formatter
+    formatter = ISO8601Formatter(
+        '%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+    )
 
     # Create console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
     # Create file handler if log_file is provided
     if log_file:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
         file_handler = logging.FileHandler(log_file)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)

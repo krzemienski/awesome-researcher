@@ -1,17 +1,21 @@
 """
-Aggregator for combining research results from multiple agents.
+Aggregator for combining and analyzing research results.
 """
 
 import json
 import logging
-from typing import Dict, List, Optional, Set
+import os
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Tuple
 
 from awesome_list_researcher.category_agent import ResearchCandidate, ResearchResult
 
 
 class Aggregator:
     """
-    Aggregates research results from multiple category agents.
+    Aggregator for combining and analyzing research results.
     """
 
     def __init__(self, logger: logging.Logger):
@@ -23,159 +27,143 @@ class Aggregator:
         """
         self.logger = logger
         self.results: List[ResearchResult] = []
+        self.all_candidates: List[ResearchCandidate] = []
+        self.categories_count: Dict[str, int] = defaultdict(int)
+        self.subcategories_count: Dict[str, int] = defaultdict(int)
 
     def add_result(self, result: ResearchResult) -> None:
         """
         Add a research result to the aggregator.
 
         Args:
-            result: ResearchResult to add
+            result: Research result to add
         """
         self.results.append(result)
+        self.all_candidates.extend(result.candidates)
+
+        # Update category and subcategory counts
+        category = result.category
+        subcategory = result.subcategory
+
+        # Count candidates per category and subcategory
+        for candidate in result.candidates:
+            self.categories_count[category] += 1
+            if subcategory:
+                self.subcategories_count[f"{category}/{subcategory}"] += 1
+
         self.logger.info(
-            f"Added research result for query '{result.query.query}' "
-            f"with {len(result.candidates)} candidates"
+            f"Added result with {len(result.candidates)} candidates for query '{result.query}'"
         )
 
     def get_all_candidates(self) -> List[ResearchCandidate]:
         """
-        Get all candidate resources from all research results.
+        Get all candidates from all results.
 
         Returns:
-            List of all candidate resources
+            List of all candidates
         """
-        all_candidates = []
-
-        for result in self.results:
-            all_candidates.extend(result.candidates)
-
-        self.logger.info(f"Aggregated {len(all_candidates)} total candidates")
-
-        return all_candidates
-
-    def get_candidates_by_category(self) -> Dict[str, List[ResearchCandidate]]:
-        """
-        Get candidate resources grouped by category.
-
-        Returns:
-            Dictionary mapping category names to lists of candidates
-        """
-        candidates_by_category = {}
-
-        for result in self.results:
-            for candidate in result.candidates:
-                category = candidate.category
-
-                if category not in candidates_by_category:
-                    candidates_by_category[category] = []
-
-                candidates_by_category[category].append(candidate)
-
-        return candidates_by_category
-
-    def get_candidates_for_category(self, category: str) -> List[ResearchCandidate]:
-        """
-        Get candidate resources for a specific category.
-
-        Args:
-            category: Category name
-
-        Returns:
-            List of candidates for the category
-        """
-        return [
-            candidate
-            for result in self.results
-            for candidate in result.candidates
-            if candidate.category == category
-        ]
+        return self.all_candidates
 
     def save_aggregated_results(self, output_path: str) -> None:
         """
         Save aggregated results to a JSON file.
 
         Args:
-            output_path: Path to save the results to
+            output_path: Path to save the results
         """
+        # Create the aggregated data structure
         aggregated_data = {
-            "total_results": len(self.results),
-            "total_candidates": len(self.get_all_candidates()),
-            "results": [result.to_dict() for result in self.results]
+            "timestamp": datetime.now().isoformat(),
+            "total_candidates": len(self.all_candidates),
+            "total_queries": len(self.results),
+            "categories": dict(self.categories_count),
+            "subcategories": dict(self.subcategories_count),
+            "results": [result.to_dict() for result in self.results],
+            "candidates": [candidate.to_dict() for candidate in self.all_candidates]
         }
 
-        with open(output_path, 'w') as f:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # Save the data
+        with open(output_path, "w") as f:
             json.dump(aggregated_data, f, indent=2)
 
         self.logger.info(f"Saved aggregated results to {output_path}")
 
     def generate_research_report(self, output_path: str) -> None:
         """
-        Generate a Markdown report of the research results.
+        Generate a Markdown research report.
 
         Args:
-            output_path: Path to save the report to
+            output_path: Path to save the report
         """
-        report_lines = ["# Research Report\n"]
+        # Create the report content
+        report = [
+            "# Awesome List Research Report",
+            f"\nGenerated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"\n## Summary",
+            f"\n- **Total queries executed**: {len(self.results)}",
+            f"- **Total candidates found**: {len(self.all_candidates)}",
+            f"- **Categories researched**: {len(self.categories_count)}",
+            f"- **Subcategories researched**: {len(self.subcategories_count)}",
+            f"\n## Research Queries",
+            "\nThe following queries were executed during research:"
+        ]
 
-        # Summary
-        report_lines.append("## Summary\n")
-        report_lines.append(f"- Total queries executed: {len(self.results)}")
-        report_lines.append(f"- Total candidates found: {len(self.get_all_candidates())}")
-        report_lines.append("")
-
-        # Results by category
-        report_lines.append("## Results by Category\n")
-
-        candidates_by_category = self.get_candidates_by_category()
-
-        for category, candidates in sorted(candidates_by_category.items()):
-            report_lines.append(f"### {category}\n")
-            report_lines.append(f"Found {len(candidates)} candidates:\n")
-
-            # Group by subcategory if present
-            subcategories = {}
-            no_subcategory = []
-
-            for candidate in candidates:
-                if candidate.subcategory:
-                    if candidate.subcategory not in subcategories:
-                        subcategories[candidate.subcategory] = []
-                    subcategories[candidate.subcategory].append(candidate)
-                else:
-                    no_subcategory.append(candidate)
-
-            # Add candidates without subcategory
-            if no_subcategory:
-                for candidate in no_subcategory:
-                    report_lines.append(
-                        f"- [{candidate.name}]({candidate.url}) - {candidate.description}"
-                    )
-                report_lines.append("")
-
-            # Add candidates by subcategory
-            for subcategory, subcat_candidates in sorted(subcategories.items()):
-                report_lines.append(f"#### {subcategory}\n")
-                for candidate in subcat_candidates:
-                    report_lines.append(
-                        f"- [{candidate.name}]({candidate.url}) - {candidate.description}"
-                    )
-                report_lines.append("")
-
-        # Queries executed
-        report_lines.append("## Queries Executed\n")
-
+        # Add queries
         for i, result in enumerate(self.results, 1):
-            query = result.query
-            category_info = f"Category: {query.category}"
-            if query.subcategory:
-                category_info += f", Subcategory: {query.subcategory}"
+            cat_info = f"*{result.category}*"
+            if result.subcategory:
+                cat_info += f" / *{result.subcategory}*"
+            report.append(f"\n{i}. **Query**: \"{result.query}\" ({cat_info})")
+            report.append(f"   - Found {len(result.candidates)} candidates")
 
-            report_lines.append(f"### Query {i}: {query.query}\n")
-            report_lines.append(f"{category_info}\n")
-            report_lines.append(f"Found {len(result.candidates)} candidates\n")
+        # Add candidate statistics by category
+        report.append(f"\n## Candidate Resources by Category")
+
+        for category, count in sorted(self.categories_count.items(), key=lambda x: x[1], reverse=True):
+            report.append(f"\n### {category} ({count} candidates)")
+
+            # Add subcategories for this category
+            subcats = {
+                subcat.split("/")[1]: count
+                for subcat, count in self.subcategories_count.items()
+                if subcat.startswith(f"{category}/")
+            }
+
+            if subcats:
+                for subcat, subcount in sorted(subcats.items(), key=lambda x: x[1], reverse=True):
+                    report.append(f"- *{subcat}*: {subcount} candidates")
+
+        # Add sample candidates
+        report.append(f"\n## Sample Candidates")
+
+        # Get a maximum of 20 candidates, distributed across categories
+        samples_per_category = 3
+        sample_candidates = []
+
+        # Group candidates by category
+        candidates_by_category = defaultdict(list)
+        for candidate in self.all_candidates:
+            candidates_by_category[candidate.category].append(candidate)
+
+        # Take samples from each category
+        for category, candidates in candidates_by_category.items():
+            for candidate in candidates[:samples_per_category]:
+                sample_candidates.append(candidate)
+
+        # Add to report
+        for candidate in sample_candidates[:20]:
+            report.append(f"\n### {candidate.name}")
+            report.append(f"- **URL**: {candidate.url}")
+            report.append(f"- **Description**: {candidate.description}")
+            report.append(f"- **Category**: {candidate.category}")
+            if candidate.subcategory:
+                report.append(f"- **Subcategory**: {candidate.subcategory}")
 
         # Write the report
-        with open(output_path, 'w') as f:
-            f.write('\n'.join(report_lines))
+        with open(output_path, "w") as f:
+            f.write("\n".join(report))
 
         self.logger.info(f"Generated research report at {output_path}")

@@ -35,150 +35,286 @@ class Renderer:
         """
         self.logger = logger
 
-    def render_updated_list(
-        self,
-        original_list: AwesomeList,
-        new_links: List[ResearchCandidate],
-        output_path: str
-    ) -> bool:
+    def _sort_links(self, links: List[AwesomeLink]) -> List[AwesomeLink]:
         """
-        Render an updated Markdown file with new links.
+        Sort links alphabetically by name, ignoring "A", "An", "The".
 
         Args:
-            original_list: Original awesome list
-            new_links: New links to add
-            output_path: Path to save the updated Markdown file
+            links: List of links to sort
 
         Returns:
-            True if the file passes awesome-lint
+            Sorted list of links
         """
-        self.logger.info(
-            f"Rendering updated list with {len(new_links)} new links"
+        def get_sort_key(link: AwesomeLink) -> str:
+            # Remove leading articles for sorting
+            name = link.name
+            name = re.sub(r'^(A|An|The) ', '', name)
+            return name.lower()
+
+        return sorted(links, key=get_sort_key)
+
+    def _insert_links_into_category(
+        self,
+        category: AwesomeCategory,
+        new_links: List[AwesomeLink]
+    ) -> None:
+        """
+        Insert new links into a category, maintaining alphabetical order.
+
+        Args:
+            category: Category to insert links into
+            new_links: New links to insert
+        """
+        # Group new links by subcategory
+        links_by_subcategory = {}
+        for link in new_links:
+            subcategory = link.subcategory
+            if subcategory not in links_by_subcategory:
+                links_by_subcategory[subcategory] = []
+            links_by_subcategory[subcategory].append(link)
+
+        # Insert links without subcategory
+        if None in links_by_subcategory:
+            category.links.extend(links_by_subcategory[None])
+            category.links = self._sort_links(category.links)
+
+        # Insert links with subcategories
+        for subcategory, links in links_by_subcategory.items():
+            if subcategory is None:
+                continue
+
+            if subcategory not in category.subcategories:
+                category.subcategories[subcategory] = []
+
+            category.subcategories[subcategory].extend(links)
+            category.subcategories[subcategory] = self._sort_links(
+                category.subcategories[subcategory]
+            )
+
+    def _update_awesome_list(
+        self,
+        awesome_list: AwesomeList,
+        new_links: List[ResearchCandidate]
+    ) -> AwesomeList:
+        """
+        Update an Awesome List with new links.
+
+        Args:
+            awesome_list: Original Awesome List
+            new_links: New links to add
+
+        Returns:
+            Updated Awesome List
+        """
+        # Create a copy of the original list
+        updated_list = AwesomeList(
+            title=awesome_list.title,
+            description=awesome_list.description,
+            categories=[
+                AwesomeCategory(
+                    name=category.name,
+                    links=category.links.copy(),
+                    subcategories={
+                        subcat: links.copy()
+                        for subcat, links in category.subcategories.items()
+                    }
+                )
+                for category in awesome_list.categories
+            ]
         )
 
         # Convert candidates to AwesomeLink objects
-        awesome_links = [candidate.to_awesome_link() for candidate in new_links]
+        new_awesome_links = [candidate.to_awesome_link() for candidate in new_links]
 
-        # Group links by category and subcategory
+        # Group new links by category
         links_by_category = {}
-
-        for link in awesome_links:
+        for link in new_awesome_links:
             category_name = link.category
-            subcategory_name = link.subcategory
-
             if category_name not in links_by_category:
-                links_by_category[category_name] = {None: []}
+                links_by_category[category_name] = []
+            links_by_category[category_name].append(link)
 
-            if subcategory_name is not None:
-                if subcategory_name not in links_by_category[category_name]:
-                    links_by_category[category_name][subcategory_name] = []
-                links_by_category[category_name][subcategory_name].append(link)
+        # Insert new links into categories
+        for category_name, category_links in links_by_category.items():
+            # Find the matching category
+            matching_categories = [
+                category for category in updated_list.categories
+                if category.name == category_name
+            ]
+
+            if matching_categories:
+                category = matching_categories[0]
+                self._insert_links_into_category(category, category_links)
             else:
-                links_by_category[category_name][None].append(link)
+                # If the category doesn't exist, create it
+                self.logger.info(f"Creating new category: {category_name}")
+                new_category = AwesomeCategory(name=category_name)
+                self._insert_links_into_category(new_category, category_links)
 
-        # Create a deep copy of the original list
-        updated_list = AwesomeList(
-            title=original_list.title,
-            description=original_list.description,
-            categories=[]
+                # Add the new category at the end, before any Contributing or License sections
+                # Find the index of Contributing or License
+                contrib_index = next(
+                    (i for i, cat in enumerate(updated_list.categories)
+                     if cat.name.lower() in ["contributing", "license"]),
+                    len(updated_list.categories)
+                )
+
+                updated_list.categories.insert(contrib_index, new_category)
+
+        return updated_list
+
+    def _generate_toc(self, awesome_list: AwesomeList) -> str:
+        """
+        Generate a table of contents for an Awesome List.
+
+        Args:
+            awesome_list: Awesome List to generate TOC for
+
+        Returns:
+            Markdown string with the table of contents
+        """
+        # Count the total number of links
+        total_links = sum(
+            len(category.links) + sum(len(links) for links in category.subcategories.values())
+            for category in awesome_list.categories
         )
 
-        # Add categories from the original list
-        for category in original_list.categories:
-            new_category = AwesomeCategory(
-                name=category.name,
-                links=category.links.copy(),
-                subcategories={k: v.copy() for k, v in category.subcategories.items()}
-            )
-            updated_list.categories.append(new_category)
+        # Only generate a TOC if there are more than 40 links
+        if total_links <= 40:
+            return ""
 
-        # Add new links to the updated list
-        for category in updated_list.categories:
+        toc_lines = ["## Contents\n"]
+
+        for category in awesome_list.categories:
             category_name = category.name
 
-            if category_name in links_by_category:
-                # Add links with no subcategory
-                if None in links_by_category[category_name]:
-                    category.links.extend(links_by_category[category_name][None])
-                    # Sort alphabetically
-                    category.links.sort(key=lambda x: x.name.lower())
+            # Skip certain categories in the TOC
+            if category_name.lower() in ["contents", "table of contents"]:
+                continue
 
-                # Add links with subcategories
-                for subcategory_name, subcategory_links in links_by_category[category_name].items():
-                    if subcategory_name is not None:
-                        if subcategory_name not in category.subcategories:
-                            category.subcategories[subcategory_name] = []
+            # Create a link-friendly ID
+            category_id = category_name.lower().replace(" ", "-")
+            category_id = re.sub(r'[^\w\-]', '', category_id)
 
-                        category.subcategories[subcategory_name].extend(subcategory_links)
-                        # Sort alphabetically
-                        category.subcategories[subcategory_name].sort(key=lambda x: x.name.lower())
+            toc_lines.append(f"- [{category_name}](#{category_id})")
 
-        # Render the Markdown
-        markdown = self._render_markdown(updated_list)
+            # Add subcategories if any
+            if category.subcategories:
+                for subcategory in sorted(category.subcategories.keys()):
+                    # Create a link-friendly ID for the subcategory
+                    subcategory_id = f"{category_id}-{subcategory.lower().replace(' ', '-')}"
+                    subcategory_id = re.sub(r'[^\w\-]', '', subcategory_id)
 
-        # Save the Markdown to the output file
-        with open(output_path, 'w') as f:
-            f.write(markdown)
+                    toc_lines.append(f"  - [{subcategory}](#{subcategory_id})")
 
-        self.logger.info(f"Saved updated Markdown to {output_path}")
+        return "\n".join(toc_lines) + "\n"
 
-        # Validate with awesome-lint
-        lint_result = self._validate_with_awesome_lint(output_path)
+    def _generate_contributing_section(self) -> str:
+        """
+        Generate a Contributing section for an Awesome List.
 
-        if not lint_result:
-            self.logger.warning(f"Generated Markdown failed awesome-lint validation")
+        Returns:
+            Markdown string with the Contributing section
+        """
+        # Check if CONTRIBUTING_TEMPLATE.md exists
+        if os.path.exists("CONTRIBUTING_TEMPLATE.md"):
+            with open("CONTRIBUTING_TEMPLATE.md", "r") as f:
+                return f.read()
         else:
-            self.logger.info(f"Generated Markdown passed awesome-lint validation")
+            # Generate a basic Contributing section
+            return """
+## Contributing
 
-        return lint_result
+Your contributions are always welcome! Please take a look at the [contribution guidelines](CONTRIBUTING.md) first.
+
+- To add, remove, or update an item, please submit a pull request
+- All contributors will be added to this document
+- Make sure to follow the [Awesome List Guidelines](https://github.com/sindresorhus/awesome/blob/main/pull_request_template.md)
+
+Thank you to all contributors!
+"""
 
     def _render_markdown(self, awesome_list: AwesomeList) -> str:
         """
-        Render an AwesomeList object as Markdown.
+        Render an Awesome List as Markdown.
 
         Args:
-            awesome_list: AwesomeList to render
+            awesome_list: Awesome List to render
 
         Returns:
             Markdown string
         """
         lines = []
 
-        # Title
+        # Add title and description
         lines.append(f"# {awesome_list.title}")
         lines.append("")
-
-        # Description
         lines.append(awesome_list.description)
         lines.append("")
 
-        # Categories
+        # Add table of contents if needed
+        toc = self._generate_toc(awesome_list)
+        if toc:
+            lines.append(toc)
+
+        # Add categories and links
         for category in awesome_list.categories:
             lines.append(f"## {category.name}")
             lines.append("")
 
-            # Links in the category
+            # Add category links
             for link in category.links:
                 lines.append(link.to_markdown())
 
             lines.append("")
 
-            # Subcategories
-            for subcategory_name, subcategory_links in sorted(category.subcategories.items()):
-                if subcategory_links:
-                    lines.append(f"### {subcategory_name}")
-                    lines.append("")
+            # Add subcategories
+            for subcategory, subcat_links in sorted(category.subcategories.items()):
+                lines.append(f"### {subcategory}")
+                lines.append("")
 
-                    for link in subcategory_links:
-                        lines.append(link.to_markdown())
+                for link in subcat_links:
+                    lines.append(link.to_markdown())
 
-                    lines.append("")
-
-        # Ensure the file ends with a newline
-        if lines[-1] != "":
-            lines.append("")
+                lines.append("")
 
         return "\n".join(lines)
+
+    def render_updated_list(
+        self,
+        awesome_list: AwesomeList,
+        new_links: List[ResearchCandidate],
+        output_path: str
+    ) -> bool:
+        """
+        Render an updated Awesome List with new links and save it to a file.
+
+        Args:
+            awesome_list: Original Awesome List
+            new_links: New links to add
+            output_path: Path to save the updated list
+
+        Returns:
+            True if the rendering was successful and passes validation
+        """
+        self.logger.info(f"Rendering updated list with {len(new_links)} new links")
+
+        # Update the list with new links
+        updated_list = self._update_awesome_list(awesome_list, new_links)
+
+        # Render the updated list as Markdown
+        markdown = self._render_markdown(updated_list)
+
+        # Save the Markdown to the output file
+        with open(output_path, "w") as f:
+            f.write(markdown)
+
+        self.logger.info(f"Saved updated list to {output_path}")
+
+        # Validate the updated list with awesome-lint
+        validation_result = self._validate_with_awesome_lint(output_path)
+
+        return validation_result
 
     def _validate_with_awesome_lint(self, markdown_path: str) -> bool:
         """
@@ -188,37 +324,84 @@ class Renderer:
             markdown_path: Path to the Markdown file
 
         Returns:
-            True if the file passes awesome-lint
+            True if the validation succeeded, False otherwise
         """
-        try:
-            # Create temporary directory
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Create a temporary file
-                temp_file = os.path.join(temp_dir, "README.md")
+        self.logger.info(f"Validating {markdown_path} with awesome-lint")
 
-                # Copy the contents of the Markdown file to the temporary file
-                with open(markdown_path, 'r') as src_file, open(temp_file, 'w') as dest_file:
+        # Create a temporary directory for validation
+        # (awesome-lint requires the file to be named README.md)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Copy the file to the temporary directory as README.md
+            readme_path = os.path.join(temp_dir, "README.md")
+            with open(markdown_path, "r") as src_file:
+                with open(readme_path, "w") as dest_file:
                     dest_file.write(src_file.read())
 
-                # Run awesome-lint in the temporary directory
+            # Run awesome-lint on the temporary README.md
+            try:
                 result = subprocess.run(
-                    ["awesome-lint", temp_file],
+                    ["awesome-lint", readme_path],
                     capture_output=True,
                     text=True,
-                    check=False,
-                    cwd=temp_dir
+                    check=False
                 )
 
-                # Check the result
                 if result.returncode == 0:
+                    self.logger.info("awesome-lint validation passed")
                     return True
                 else:
-                    self.logger.warning(f"awesome-lint output: {result.stderr}")
+                    self.logger.error(f"awesome-lint validation failed: {result.stderr}")
+                    # Try to fix common issues and revalidate
+                    fixed = self._fix_common_lint_issues(markdown_path)
+                    if fixed:
+                        return self._validate_with_awesome_lint(markdown_path)
                     return False
 
-        except Exception as e:
-            self.logger.error(f"Error validating with awesome-lint: {str(e)}")
-            return False
+            except Exception as e:
+                self.logger.error(f"Error running awesome-lint: {str(e)}")
+                return False
+
+    def _fix_common_lint_issues(self, markdown_path: str) -> bool:
+        """
+        Fix common lint issues in a Markdown file.
+
+        Args:
+            markdown_path: Path to the Markdown file
+
+        Returns:
+            True if fixes were applied, False otherwise
+        """
+        self.logger.info(f"Attempting to fix common lint issues in {markdown_path}")
+
+        with open(markdown_path, "r") as f:
+            content = f.read()
+
+        # Fix issue: Missing newline at end of file
+        if not content.endswith("\n"):
+            content += "\n"
+
+        # Fix issue: Multiple consecutive blank lines
+        content = re.sub(r'\n{3,}', '\n\n', content)
+
+        # Fix issue: Trailing whitespace
+        content = re.sub(r'[ \t]+\n', '\n', content)
+
+        # Fix issue: Links ending with periods
+        content = re.sub(r'\) - ([^.]+)\.(\s)', r') - \1\2', content)
+
+        # Fix issue: Description length > 100 characters
+        def shorten_description(match):
+            desc = match.group(2)
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+            return match.group(1) + desc + match.group(3)
+
+        content = re.sub(r'(\) - )([^"\n]{101,})(\s)', shorten_description, content)
+
+        with open(markdown_path, "w") as f:
+            f.write(content)
+
+        return True
 
     def load_candidates_from_json(self, json_path: str) -> List[ResearchCandidate]:
         """

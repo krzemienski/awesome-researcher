@@ -12,7 +12,7 @@ This tool ingests any GitHub Awesome-style repository, parses its README.md, and
 - Enforces cost and time constraints
 - Configurable OpenAI model selection
 - Deduplication of existing resources
-- Validation of new resources (HTTPS, GitHub stars, etc.)
+- Validation of new resources (HTTPS, accessibility, etc.)
 - Structured logging of all operations
 
 ## Requirements
@@ -26,10 +26,9 @@ This tool ingests any GitHub Awesome-style repository, parses its README.md, and
 # Build and run the tool
 ./build-and-run.sh --repo_url https://github.com/username/awesome-repo \
   --wall_time 600 \
-  --cost_ceiling 5.00 \
-  --min_stars 100 \
+  --cost_ceiling 10.00 \
   --output_dir runs/ \
-  --model_planner gpt-4.1-mini \
+  --model_planner gpt-4.1 \
   --model_researcher o3 \
   --model_validator o3
 ```
@@ -40,11 +39,10 @@ This tool ingests any GitHub Awesome-style repository, parses its README.md, and
 |-----------|-------------|---------|
 | `--repo_url` | GitHub URL of the Awesome list (required) | - |
 | `--wall_time` | Maximum execution time in seconds | 600 |
-| `--cost_ceiling` | Maximum OpenAI API cost in USD | 5.00 |
-| `--min_stars` | Minimum GitHub stars for new resources | 100 |
+| `--cost_ceiling` | Maximum OpenAI API cost in USD | 10.00 |
 | `--output_dir` | Directory for output artifacts | runs/ |
 | `--seed` | Random seed for deterministic behavior | random |
-| `--model_planner` | Model for planning research queries | gpt-4.1-mini |
+| `--model_planner` | Model for planning research queries | gpt-4.1 |
 | `--model_researcher` | Model for researching new resources | o3 |
 | `--model_validator` | Model for validating new resources | o3 |
 
@@ -63,6 +61,31 @@ All outputs are saved under `runs/<ISO-TIMESTAMP>/` with the following artifacts
 - `updated_list.md`: Final updated Markdown list
 - `agent.log`: Detailed log of all operations
 - `research_report.md`: Summary of the research process
+
+## Model Selection Strategy
+
+The tool uses different models for different tasks to optimize for cost and quality:
+
+- **Planner Agent**: `gpt-4.1` - Deep reasoning to create high-quality search queries
+- **Category Researcher**: `o3` - Cost-effective option for large volume of research tasks
+- **Validator**: `o3` - Lightweight description cleanup and validation
+
+## Running Tests
+
+To run the end-to-end test:
+
+```bash
+# Make sure the OPENAI_API_KEY is set
+export OPENAI_API_KEY=your_api_key_here
+# Run the test
+./tests/run_e2e.sh
+```
+
+Add the `--keep` flag to preserve test outputs:
+
+```bash
+./tests/run_e2e.sh --keep
+```
 
 ## License
 

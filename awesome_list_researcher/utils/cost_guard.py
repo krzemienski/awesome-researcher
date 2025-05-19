@@ -1,143 +1,167 @@
 """
-Cost guard utilities for tracking and limiting OpenAI API costs.
+Cost monitoring and limiting for OpenAI API calls.
 """
 
 import logging
-from dataclasses import dataclass
 from typing import Dict, Optional
 
-# Model prices per 1K tokens (as of 2023)
-MODEL_PRICES = {
-    # GPT-4 Models
-    "gpt-4o": {"input": 0.005, "output": 0.015},
-    "gpt-4-turbo": {"input": 0.01, "output": 0.03},
-    "gpt-4": {"input": 0.03, "output": 0.06},
-    "gpt-4-32k": {"input": 0.06, "output": 0.12},
-
-    # GPT-3.5 Models
-    "gpt-3.5-turbo": {"input": 0.0005, "output": 0.0015},
-    "gpt-3.5-turbo-16k": {"input": 0.001, "output": 0.002},
-
-    # Claude Models (approximations)
-    "claude-3-opus": {"input": 0.015, "output": 0.075},
-    "claude-3-sonnet": {"input": 0.003, "output": 0.015},
-    "claude-3-haiku": {"input": 0.00025, "output": 0.00125},
-    "o3": {"input": 0.015, "output": 0.075},  # Alias for claude-3-opus
-
-    # Default for unknown models
-    "gpt-4.1-mini": {"input": 0.0015, "output": 0.006},  # Approximation
-}
+from openai.types.completion import Completion
+from openai.types.chat import ChatCompletion
 
 
-@dataclass
 class CostGuard:
     """
-    Tracks and limits OpenAI API costs.
+    Guard for monitoring and limiting API costs.
     """
-    cost_ceiling: float
-    logger: logging.Logger
-    total_cost_usd: float = 0.0
-    total_tokens: int = 0
 
-    def estimate_cost(
-        self,
-        model: str,
-        input_tokens: int,
-        output_tokens: Optional[int] = None
-    ) -> float:
+    # Pricing per 1000 tokens (input/output) for various models
+    # These rates may change, so they should be updated as needed
+    PRICING = {
+        "gpt-4": {"input": 0.03, "output": 0.06},
+        "gpt-4-32k": {"input": 0.06, "output": 0.12},
+        "gpt-4-turbo": {"input": 0.01, "output": 0.03},
+        "gpt-4.1-mini": {"input": 0.01, "output": 0.03},
+        "gpt-4.1": {"input": 0.01, "output": 0.03},
+        "gpt-3.5-turbo": {"input": 0.001, "output": 0.002},
+        "o3": {"input": 0.01, "output": 0.03},
+    }
+
+    def __init__(self, cost_ceiling: float, logger: logging.Logger):
         """
-        Estimate the cost of an API call.
+        Initialize the cost guard.
+
+        Args:
+            cost_ceiling: Maximum allowed cost in USD
+            logger: Logger instance
+        """
+        self.cost_ceiling = cost_ceiling
+        self.logger = logger
+        self.total_cost_usd = 0.0
+        self.total_tokens = 0
+
+    def _get_rates(self, model: str) -> Dict[str, float]:
+        """
+        Get the pricing rates for a model.
 
         Args:
             model: Model name
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens (if None, estimated as input_tokens/2)
 
         Returns:
-            Estimated cost in USD
+            Dictionary with input and output rates
         """
-        model_prices = MODEL_PRICES.get(model.lower(), MODEL_PRICES["gpt-3.5-turbo"])
+        # Normalize model name
+        model_base = model.split("-")[0].lower()
 
-        if output_tokens is None:
-            output_tokens = input_tokens // 2  # Rough estimation
+        if model in self.PRICING:
+            return self.PRICING[model]
+        elif model_base == "gpt4" or model_base == "gpt-4":
+            return self.PRICING["gpt-4"]
+        elif model_base == "gpt3" or model_base == "gpt-3":
+            return self.PRICING["gpt-3.5-turbo"]
+        else:
+            # Default to gpt-3.5-turbo rates if unknown
+            self.logger.warning(f"Unknown model: {model}, using default pricing")
+            return self.PRICING["gpt-3.5-turbo"]
 
-        input_cost = (input_tokens / 1000) * model_prices["input"]
-        output_cost = (output_tokens / 1000) * model_prices["output"]
+    def _calculate_cost(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int
+    ) -> float:
+        """
+        Calculate the cost of an API call.
+
+        Args:
+            model: Model name
+            prompt_tokens: Number of tokens in the prompt
+            completion_tokens: Number of tokens in the completion
+
+        Returns:
+            Cost in USD
+        """
+        rates = self._get_rates(model)
+
+        input_cost = (prompt_tokens / 1000) * rates["input"]
+        output_cost = (completion_tokens / 1000) * rates["output"]
 
         return input_cost + output_cost
+
+    def update_cost(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int
+    ) -> float:
+        """
+        Update the total cost with a new API call.
+
+        Args:
+            model: Model name
+            prompt_tokens: Number of tokens in the prompt
+            completion_tokens: Number of tokens in the completion
+
+        Returns:
+            Cost of the current call in USD
+        """
+        cost = self._calculate_cost(model, prompt_tokens, completion_tokens)
+        self.total_cost_usd += cost
+        self.total_tokens += prompt_tokens + completion_tokens
+
+        self.logger.info(
+            f"API call: {prompt_tokens} prompt tokens, {completion_tokens} completion tokens, "
+            f"${cost:.4f}, total: ${self.total_cost_usd:.4f}"
+        )
+
+        return cost
+
+    def update_from_completion(
+        self,
+        completion: ChatCompletion,
+        model: Optional[str] = None
+    ) -> float:
+        """
+        Update the total cost from a completion object.
+
+        Args:
+            completion: ChatCompletion or Completion object
+            model: Model name (optional, will use completion.model if not provided)
+
+        Returns:
+            Cost of the current call in USD
+        """
+        if model is None:
+            model = completion.model
+
+        usage = completion.usage
+
+        return self.update_cost(
+            model,
+            usage.prompt_tokens,
+            usage.completion_tokens
+        )
 
     def would_exceed_ceiling(
         self,
         model: str,
-        input_tokens: int,
-        output_tokens: Optional[int] = None
+        estimated_prompt_tokens: int,
+        estimated_completion_tokens: int
     ) -> bool:
         """
-        Check if an API call would exceed the cost ceiling.
+        Check if a potential API call would exceed the cost ceiling.
 
         Args:
             model: Model name
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens
+            estimated_prompt_tokens: Estimated number of tokens in the prompt
+            estimated_completion_tokens: Estimated number of tokens in the completion
 
         Returns:
-            True if the call would exceed the ceiling
+            True if the call would exceed the ceiling, False otherwise
         """
-        est_cost = self.estimate_cost(model, input_tokens, output_tokens)
-        return (self.total_cost_usd + est_cost) > self.cost_ceiling
-
-    def update_usage(
-        self,
-        model: str,
-        input_tokens: int,
-        output_tokens: int,
-        event: str
-    ) -> None:
-        """
-        Update usage after an API call.
-
-        Args:
-            model: Model name
-            input_tokens: Number of input tokens used
-            output_tokens: Number of output tokens generated
-            event: Description of the API call
-        """
-        model_prices = MODEL_PRICES.get(model.lower(), MODEL_PRICES["gpt-3.5-turbo"])
-
-        input_cost = (input_tokens / 1000) * model_prices["input"]
-        output_cost = (output_tokens / 1000) * model_prices["output"]
-
-        total_cost = input_cost + output_cost
-        total_tokens = input_tokens + output_tokens
-
-        self.total_cost_usd += total_cost
-        self.total_tokens += total_tokens
-
-        # Log the usage
-        self.logger.info(
-            f"{event}: {total_tokens} tokens, ${total_cost:.6f}",
-            extra={
-                "event": event,
-                "model": model,
-                "tokens": total_tokens,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost_usd": total_cost,
-                "accumulated_cost_usd": self.total_cost_usd,
-                "accumulated_tokens": self.total_tokens
-            }
+        estimated_cost = self._calculate_cost(
+            model,
+            estimated_prompt_tokens,
+            estimated_completion_tokens
         )
 
-        # Check if we're nearing the cost ceiling
-        if self.total_cost_usd > self.cost_ceiling * 0.8:
-            self.logger.warning(
-                f"Approaching cost ceiling: ${self.total_cost_usd:.2f} / ${self.cost_ceiling:.2f}",
-                extra={"event": "cost_warning", "cost_usd": self.total_cost_usd}
-            )
-
-        # Check if we've exceeded the cost ceiling
-        if self.total_cost_usd > self.cost_ceiling:
-            self.logger.error(
-                f"Cost ceiling exceeded: ${self.total_cost_usd:.2f} > ${self.cost_ceiling:.2f}",
-                extra={"event": "cost_ceiling_exceeded", "cost_usd": self.total_cost_usd}
-            )
+        return (self.total_cost_usd + estimated_cost) > self.cost_ceiling

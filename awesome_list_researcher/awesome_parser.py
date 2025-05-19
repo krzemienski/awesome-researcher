@@ -5,6 +5,7 @@ Parser for Awesome-style Markdown lists.
 import json
 import logging
 import re
+import subprocess
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -356,6 +357,37 @@ class MarkdownParser:
         )
 
         return awesome_list
+
+    def verify_awesome_lint(self, markdown_path: str) -> bool:
+        """
+        Verify that a Markdown file passes awesome-lint.
+
+        Args:
+            markdown_path: Path to Markdown file
+
+        Returns:
+            True if the file passes awesome-lint, False otherwise
+        """
+        self.logger.info(f"Running awesome-lint on {markdown_path}")
+
+        try:
+            result = subprocess.run(
+                ["awesome-lint", markdown_path],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+
+            if result.returncode != 0:
+                self.logger.error(f"awesome-lint failed: {result.stderr}")
+                return False
+
+            self.logger.info("awesome-lint passed")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error running awesome-lint: {str(e)}")
+            return False
 
 
 class DuplicateDetector:

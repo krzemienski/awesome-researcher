@@ -5,42 +5,28 @@ Validator for candidate resources.
 import json
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple, Set
 
-import httpx
+import requests
 from openai import OpenAI
 from tenacity import (
     retry,
-    retry_if_exception_type,
     stop_after_attempt,
-    wait_exponential
+    wait_exponential,
+    retry_if_exception_type
 )
 
 from awesome_list_researcher.category_agent import ResearchCandidate
 from awesome_list_researcher.utils.cost_guard import CostGuard
-from awesome_list_researcher.utils.github import GitHubAPI, is_github_url, parse_github_url
+from awesome_list_researcher.utils.logging import APICallLogRecord
 
 
 class Validator:
     """
-    Validates candidate resources against quality criteria.
+    Validator for candidate resources.
     """
-
-    DESCRIPTION_PROMPT = """
-You are a description formatter for resources in an Awesome List.
-Your task is to refine resource descriptions to match the Awesome List style guide:
-
-1. Begin with a capital letter
-2. Do not end with a period
-3. Keep to under 100 characters
-4. Be concise but informative
-5. Avoid promotional language ('best', 'amazing', etc.)
-6. Focus on what the resource does/provides
-
-Original description: "{description}"
-
-Give only the improved description, nothing else.
-"""
 
     def __init__(
         self,
@@ -54,20 +40,164 @@ Give only the improved description, nothing else.
         Initialize the validator.
 
         Args:
-            model: OpenAI model to use for validation
-            api_client: OpenAI API client
-            cost_guard: Cost guard for tracking API usage
+            model: OpenAI model to use
+            api_client: OpenAI client
+            cost_guard: Cost guard for tracking API costs
             logger: Logger instance
-            min_stars: Minimum GitHub stars required for repositories
+            min_stars: Minimum number of GitHub stars for a repository
         """
         self.model = model
         self.api_client = api_client
         self.cost_guard = cost_guard
         self.logger = logger
         self.min_stars = min_stars
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Awesome-List-Researcher/0.1.0"
+        })
 
-        self.http_client = httpx.Client(follow_redirects=True, timeout=10.0)
-        self.github_api = GitHubAPI(logger)
+    @retry(
+        retry=retry_if_exception_type(requests.exceptions.RequestException),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10)
+    )
+    def _check_url_accessibility(self, url: str, timeout: int = 3) -> bool:
+        """
+        Check if a URL is accessible.
+
+        Args:
+            url: URL to check
+            timeout: Timeout in seconds
+
+        Returns:
+            True if the URL is accessible, False otherwise
+        """
+        try:
+            response = self.session.head(url, timeout=timeout, allow_redirects=True)
+
+            if response.status_code == 200:
+                self.logger.info(f"URL {url} is accessible")
+                return True
+
+            self.logger.warning(f"URL {url} returned status code {response.status_code}")
+            return False
+
+        except requests.exceptions.RequestException as e:
+            self.logger.warning(f"Error checking URL {url}: {str(e)}")
+            raise
+
+    def _is_github_repo(self, url: str) -> bool:
+        """
+        Check if a URL is a GitHub repository.
+
+        Args:
+            url: URL to check
+
+        Returns:
+            True if the URL is a GitHub repository, False otherwise
+        """
+        return re.match(r"https://github\.com/[^/]+/[^/]+/?$", url) is not None
+
+    def _cleanup_description(
+        self,
+        candidate: ResearchCandidate
+    ) -> Tuple[str, int]:
+        """
+        Clean up and normalize the description of a candidate resource.
+
+        Args:
+            candidate: Candidate resource to clean up
+
+        Returns:
+            Tuple of (cleaned description, tokens used)
+        """
+        name = candidate.name
+        description = candidate.description
+        category = candidate.category
+        subcategory = candidate.subcategory or ""
+
+        # Check if the description needs cleanup
+        if (
+            len(description) <= 100 and
+            description[0].isupper() and
+            not description.endswith(".")
+        ):
+            # No cleanup needed
+            return description, 0
+
+        system_prompt = """
+You are a description cleaner for the Awesome List project. Your task is to reformat and improve
+resource descriptions following these rules:
+
+1. Make the description clear, concise, and informative
+2. Use sentence case (capitalize the first letter only)
+3. Keep it under 100 characters (shorter is better)
+4. Don't include a period at the end
+5. Avoid promotional language or value claims (like "best" or "amazing")
+6. Focus on what the resource DOES, not why it's good
+7. Use present tense
+"""
+
+        user_prompt = f"""
+Resource: {name}
+Category: {category}{f", Subcategory: {subcategory}" if subcategory else ""}
+Current description: "{description}"
+
+Please rewrite this description following the rules. Return ONLY the cleaned-up description text.
+"""
+
+        # Check if the API call would exceed the cost ceiling
+        estimated_tokens = len(system_prompt.split()) + len(user_prompt.split()) + 50
+        if self.cost_guard.would_exceed_ceiling(self.model, estimated_tokens, estimated_tokens // 4):
+            self.logger.warning(f"Cost ceiling would be exceeded for cleaning description, skipping")
+            return description, 0
+
+        # Make the API call
+        start_time = time.time()
+
+        try:
+            completion = self.api_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=100
+            )
+
+            # Update cost
+            self.cost_guard.update_from_completion(completion, self.model)
+
+            # Log full prompt and completion
+            latency = time.time() - start_time
+            api_log = APICallLogRecord(
+                agent_id="validator",
+                model=self.model,
+                prompt=f"System: {system_prompt}\nUser: {user_prompt}",
+                completion=completion.choices[0].message.content,
+                tokens=completion.usage.total_tokens,
+                cost_usd=self.cost_guard.total_cost_usd,
+                latency=latency
+            )
+
+            self.logger.info(f"API call log: {api_log.to_json()}")
+
+            # Get the cleaned description
+            cleaned_description = completion.choices[0].message.content.strip()
+
+            # Remove any quotes or period at the end
+            cleaned_description = cleaned_description.strip('"\'')
+            cleaned_description = cleaned_description.rstrip(".")
+
+            self.logger.info(f"Original description: '{description}'")
+            self.logger.info(f"Cleaned description: '{cleaned_description}'")
+
+            return cleaned_description, completion.usage.total_tokens
+
+        except Exception as e:
+            self.logger.error(f"Error cleaning description: {str(e)}")
+            return description, 0
 
     def validate_candidates(
         self,
@@ -85,207 +215,42 @@ Give only the improved description, nothing else.
         valid_candidates = []
         invalid_candidates = []
 
-        for candidate in candidates:
+        for i, candidate in enumerate(candidates):
+            self.logger.info(f"Validating candidate {i+1}/{len(candidates)}: {candidate.name}")
+
+            # Check if the URL is accessible
             try:
-                # Validate URL
-                if not self._validate_url(candidate.url):
-                    self.logger.info(f"Invalid URL: {candidate.url}")
+                url_accessible = self._check_url_accessibility(candidate.url)
+                if not url_accessible:
+                    self.logger.warning(f"URL {candidate.url} is not accessible, skipping")
                     invalid_candidates.append(candidate)
                     continue
-
-                # Validate GitHub stars if it's a GitHub repository
-                if is_github_url(candidate.url) and not self._validate_github_stars(candidate):
-                    self.logger.info(
-                        f"Insufficient GitHub stars for {candidate.url} "
-                        f"(required: {self.min_stars})"
-                    )
-                    invalid_candidates.append(candidate)
-                    continue
-
-                # Clean up description
-                cleaned_description = self._clean_description(candidate.description)
-
-                # If needed, use the LLM to improve the description
-                if len(cleaned_description) > 100 or self._needs_description_improvement(cleaned_description):
-                    improved_description = self._improve_description(cleaned_description)
-                    candidate.description = improved_description
-                else:
-                    candidate.description = cleaned_description
-
-                # Mark as validated and add to valid candidates
-                candidate.validated = True
-                valid_candidates.append(candidate)
-
             except Exception as e:
-                self.logger.error(f"Error validating candidate {candidate.name}: {str(e)}")
+                self.logger.error(f"Error checking URL {candidate.url}: {str(e)}")
                 invalid_candidates.append(candidate)
+                continue
+
+            # Clean up the description
+            cleaned_description, tokens_used = self._cleanup_description(candidate)
+
+            # Create a new candidate with the cleaned description
+            cleaned_candidate = ResearchCandidate(
+                name=candidate.name,
+                url=candidate.url,
+                description=cleaned_description,
+                category=candidate.category,
+                subcategory=candidate.subcategory,
+                source_query=candidate.source_query
+            )
+
+            valid_candidates.append(cleaned_candidate)
 
         self.logger.info(
-            f"Validated {len(valid_candidates)} candidates, "
-            f"rejected {len(invalid_candidates)} candidates"
+            f"Validated {len(candidates)} candidates: "
+            f"{len(valid_candidates)} valid, {len(invalid_candidates)} invalid"
         )
 
         return valid_candidates, invalid_candidates
-
-    @retry(
-        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
-        wait=wait_exponential(multiplier=1, min=2, max=60),
-        stop=stop_after_attempt(3)
-    )
-    def _validate_url(self, url: str) -> bool:
-        """
-        Validate a URL by checking that it:
-        1. Uses HTTPS
-        2. Is accessible (200 OK)
-
-        Args:
-            url: URL to validate
-
-        Returns:
-            True if the URL is valid
-        """
-        # Check HTTPS
-        if not url.startswith("https://"):
-            return False
-
-        try:
-            # Check accessibility with HEAD request
-            response = self.http_client.head(url)
-            return response.status_code == 200
-        except Exception:
-            return False
-
-    def _validate_github_stars(self, candidate: ResearchCandidate) -> bool:
-        """
-        Validate that a GitHub repository has enough stars.
-
-        Args:
-            candidate: Candidate to validate
-
-        Returns:
-            True if the repository has enough stars
-        """
-        try:
-            # Parse the GitHub URL
-            owner, repo = parse_github_url(candidate.url)
-
-            # Get the star count
-            stars = self.github_api.get_repo_stars(owner, repo)
-
-            # Update the candidate with the star count
-            candidate.stars = stars
-
-            return stars >= self.min_stars
-
-        except Exception as e:
-            self.logger.warning(f"Error checking GitHub stars: {str(e)}")
-            return False
-
-    def _clean_description(self, description: str) -> str:
-        """
-        Clean up a description by:
-        1. Removing leading/trailing whitespace
-        2. Capitalizing the first letter
-        3. Removing trailing periods
-
-        Args:
-            description: Description to clean
-
-        Returns:
-            Cleaned description
-        """
-        # Remove leading/trailing whitespace
-        description = description.strip()
-
-        # Capitalize first letter
-        if description and len(description) > 0:
-            description = description[0].upper() + description[1:]
-
-        # Remove trailing periods
-        description = description.rstrip(".")
-
-        return description
-
-    def _needs_description_improvement(self, description: str) -> bool:
-        """
-        Check if a description needs improvement.
-
-        Args:
-            description: Description to check
-
-        Returns:
-            True if the description needs improvement
-        """
-        # Check for promotional language
-        promotional_words = [
-            "best", "amazing", "awesome", "incredible", "excellent",
-            "outstanding", "superior", "fantastic", "greatest",
-            "perfect", "ultimate", "unbelievable", "magnificent"
-        ]
-
-        # Convert description to lowercase for case-insensitive matching
-        lower_desc = description.lower()
-
-        for word in promotional_words:
-            if f" {word} " in f" {lower_desc} ":
-                return True
-
-        # Check for exclamation marks
-        if "!" in description:
-            return True
-
-        return False
-
-    def _improve_description(self, description: str) -> str:
-        """
-        Improve a description using the language model.
-
-        Args:
-            description: Description to improve
-
-        Returns:
-            Improved description
-        """
-        # Prepare the prompt
-        prompt = self.DESCRIPTION_PROMPT.format(description=description)
-
-        # Check if the API call would exceed the cost ceiling
-        input_tokens = len(prompt.split()) * 1.5  # Rough estimate
-        if self.cost_guard.would_exceed_ceiling(self.model, int(input_tokens)):
-            self.logger.warning("Cost ceiling would be exceeded, skipping description improvement")
-            return description
-
-        try:
-            # Call the OpenAI API
-            response = self.api_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=150
-            )
-
-            # Track usage
-            usage = response.usage
-            self.cost_guard.update_usage(
-                model=self.model,
-                input_tokens=usage.prompt_tokens,
-                output_tokens=usage.completion_tokens,
-                event="improve_description"
-            )
-
-            # Get the improved description
-            improved_description = response.choices[0].message.content.strip()
-
-            # If the improved description is too long, truncate it
-            if len(improved_description) > 100:
-                improved_description = improved_description[:97] + "..."
-
-            return improved_description
-
-        except Exception as e:
-            self.logger.error(f"Error improving description: {str(e)}")
-            return description
 
     def save_validated_candidates(self, candidates: List[ResearchCandidate], output_path: str) -> None:
         """
@@ -293,11 +258,13 @@ Give only the improved description, nothing else.
 
         Args:
             candidates: List of validated candidates
-            output_path: Path to save the candidates to
+            output_path: Path to save the candidates
         """
-        candidates_data = [candidate.to_dict() for candidate in candidates]
+        # Convert to list of dictionaries
+        candidates_data = [c.to_dict() for c in candidates]
 
-        with open(output_path, 'w') as f:
+        # Write the file
+        with open(output_path, "w") as f:
             json.dump(candidates_data, f, indent=2)
 
         self.logger.info(f"Saved {len(candidates)} validated candidates to {output_path}")

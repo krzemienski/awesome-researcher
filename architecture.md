@@ -4,7 +4,7 @@
 
 The Awesome-List Researcher is designed as a modular system with distinct components that handle different stages of the research and aggregation process.
 
-```
+```mermaid
 flowchart TD
     A[--repo_url] --> B[Derive RAW README]
     B --> C[awesome_parser.py → original.json]
@@ -36,7 +36,7 @@ flowchart TD
 
 - **category_agent.py**: Implements parallel research agents
 - Each agent handles specific categories from the plan
-- Leverages OpenAI's SearchTool and BrowserTool for web research
+- Leverages web search and browser tools for web research
 - Produces candidate resources with descriptions and metadata
 
 ### 4. Aggregation and Filtering
@@ -49,9 +49,8 @@ flowchart TD
 
 - **validator.py**: Performs validation checks:
   - HTTP HEAD requests to verify accessibility
-  - GitHub star count verification
   - Description cleanup and formatting
-  - License validation where applicable
+  - URL validation (HTTPS)
 
 ### 6. Rendering
 
@@ -72,7 +71,7 @@ The entire system runs in a Docker container with all dependencies pre-installed
 - Python 3.12-slim
 - Poetry for dependency management
 - awesome-lint for validation
-- OpenAI Agents SDK
+- OpenAI API client
 
 ## Cost and Resource Management
 
@@ -85,4 +84,13 @@ The entire system runs in a Docker container with all dependencies pre-installed
 
 - Structured logging with ISO 8601 timestamps
 - Detailed tracking of tokens used and cost per operation
+- Full prompt and completion logging
 - Per-agent logging for debugging and analysis
+
+## Implementation Notes
+
+- Uses web_search and firecrawl_scrape functions to emulate BrowserTool
+- Multi-threading with ThreadPoolExecutor for parallel research
+- RapidFuzz for name-based fuzzy matching
+- Mistletoe for Markdown AST parsing
+- Tenacity for retry mechanisms

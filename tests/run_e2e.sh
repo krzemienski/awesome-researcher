@@ -20,13 +20,11 @@ mkdir -p "$TEST_DIR"
 TEST_REPO="https://github.com/sindresorhus/awesome-nodejs"
 TEST_WALL_TIME=300  # 5 minutes
 TEST_COST_CEILING=3.0
-TEST_MIN_STARS=100
 
 echo "Test parameters:"
 echo "  Repo URL: $TEST_REPO"
 echo "  Wall time: $TEST_WALL_TIME seconds"
 echo "  Cost ceiling: $TEST_COST_CEILING USD"
-echo "  Min stars: $TEST_MIN_STARS"
 echo "  Output directory: $TEST_DIR"
 echo ""
 
@@ -36,9 +34,8 @@ echo "Running Awesome-List Researcher..."
     --repo_url "$TEST_REPO" \
     --wall_time "$TEST_WALL_TIME" \
     --cost_ceiling "$TEST_COST_CEILING" \
-    --min_stars "$TEST_MIN_STARS" \
     --output_dir "$TEST_DIR" \
-    --model_planner "gpt-4.1-mini" \
+    --model_planner "gpt-4.1" \
     --model_researcher "o3" \
     --model_validator "o3"
 
