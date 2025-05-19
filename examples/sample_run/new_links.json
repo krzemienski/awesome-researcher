@@ -1,0 +1,36 @@
+[
+  {
+    "name": "NestJS",
+    "url": "https://github.com/nestjs/nest",
+    "description": "A progressive Node.js framework for building efficient and scalable server-side applications",
+    "category": "Packages",
+    "validated": true,
+    "stars": 58924
+  },
+  {
+    "name": "Inquirer.js",
+    "url": "https://github.com/SBoudrias/Inquirer.js",
+    "description": "A collection of common interactive command line user interfaces",
+    "category": "Packages",
+    "subcategory": "Command-line utilities",
+    "validated": true,
+    "stars": 17582
+  },
+  {
+    "name": "Vitest",
+    "url": "https://github.com/vitest-dev/vitest",
+    "description": "Next generation testing framework powered by Vite",
+    "category": "Packages",
+    "subcategory": "Testing",
+    "validated": true,
+    "stars": 9876
+  },
+  {
+    "name": "Node.js Design Patterns",
+    "url": "https://github.com/PacktPublishing/Node.js-Design-Patterns-Third-Edition",
+    "description": "Comprehensive guide to Node.js design patterns and best practices",
+    "category": "Resources",
+    "validated": true,
+    "stars": 3241
+  }
+]

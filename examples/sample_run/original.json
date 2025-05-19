@@ -1,0 +1,86 @@
+{
+  "title": "Awesome Node.js",
+  "description": "A curated list of delightful Node.js packages and resources.",
+  "categories": [
+    {
+      "name": "Packages",
+      "links": [
+        {
+          "name": "AdonisJS",
+          "url": "https://github.com/adonisjs/core",
+          "description": "A TypeScript-first web framework for building web apps and API servers",
+          "category": "Packages",
+          "subcategory": null
+        },
+        {
+          "name": "Express",
+          "url": "https://github.com/expressjs/express",
+          "description": "Web application framework for Node.js",
+          "category": "Packages",
+          "subcategory": null
+        },
+        {
+          "name": "Fastify",
+          "url": "https://github.com/fastify/fastify",
+          "description": "Fast and low overhead web framework",
+          "category": "Packages",
+          "subcategory": null
+        }
+      ],
+      "subcategories": {
+        "Command-line utilities": [
+          {
+            "name": "chalk",
+            "url": "https://github.com/chalk/chalk",
+            "description": "Terminal string styling done right",
+            "category": "Packages",
+            "subcategory": "Command-line utilities"
+          },
+          {
+            "name": "commander",
+            "url": "https://github.com/tj/commander.js",
+            "description": "Solution for building command-line interfaces",
+            "category": "Packages",
+            "subcategory": "Command-line utilities"
+          }
+        ],
+        "Testing": [
+          {
+            "name": "Jest",
+            "url": "https://github.com/facebook/jest",
+            "description": "JavaScript Testing Framework with a focus on simplicity",
+            "category": "Packages",
+            "subcategory": "Testing"
+          },
+          {
+            "name": "Mocha",
+            "url": "https://github.com/mochajs/mocha",
+            "description": "Feature-rich JavaScript test framework",
+            "category": "Packages",
+            "subcategory": "Testing"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Resources",
+      "links": [
+        {
+          "name": "Node.js Best Practices",
+          "url": "https://github.com/goldbergyoni/nodebestpractices",
+          "description": "The largest Node.js best practices list",
+          "category": "Resources",
+          "subcategory": null
+        },
+        {
+          "name": "Official Node.js Documentation",
+          "url": "https://nodejs.org/en/docs/",
+          "description": "Official Node.js documentation",
+          "category": "Resources",
+          "subcategory": null
+        }
+      ],
+      "subcategories": {}
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "query": {
+    "query": "best nodejs frameworks 2023",
+    "category": "Packages"
+  },
+  "candidates": [
+    {
+      "name": "NestJS",
+      "url": "https://github.com/nestjs/nest",
+      "description": "A progressive Node.js framework for building efficient and scalable server-side applications",
+      "category": "Packages",
+      "stars": 58924,
+      "validated": false
+    },
+    {
+      "name": "Koa",
+      "url": "https://github.com/koajs/koa",
+      "description": "Next generation web framework for Node.js by the creators of Express",
+      "category": "Packages",
+      "stars": 33452,
+      "validated": false
+    },
+    {
+      "name": "Hapi",
+      "url": "https://github.com/hapijs/hapi",
+      "description": "Rich framework for building applications and services",
+      "category": "Packages",
+      "stars": 14230,
+      "validated": false
+    },
+    {
+      "name": "Feathers",
+      "url": "https://github.com/feathersjs/feathers",
+      "description": "A framework for real-time applications and REST APIs",
+      "category": "Packages",
+      "stars": 14729,
+      "validated": false
+    }
+  ]
+}
