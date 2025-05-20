@@ -49,7 +49,7 @@ def parse_github_url(url: str) -> Tuple[str, str]:
     raise ValueError(
         f"Invalid GitHub repository URL: {url}. "
         f"Expected format: https://github.com/owner/repo"
-    )
+)
 
 
 class GitHubAPI:
