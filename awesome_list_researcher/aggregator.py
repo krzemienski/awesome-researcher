@@ -6,11 +6,10 @@ import json
 import logging
 import os
 from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Any
 
-from awesome_list_researcher.category_agent import ResearchCandidate, ResearchResult
+from awesome_list_researcher.category_agent import ResearchCandidate
+from awesome_list_researcher.utils import mcp_handler
 
 
 class Aggregator:
@@ -18,51 +17,64 @@ class Aggregator:
     Aggregator for combining and analyzing research results.
     """
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, category_results: Dict[str, Dict[str, List[Dict]]]):
         """
         Initialize the aggregator.
 
         Args:
-            logger: Logger instance
+            category_results: Results from category research
+                Dictionary mapping categories to query results
         """
-        self.logger = logger
-        self.results: List[ResearchResult] = []
+        self.logger = logging.getLogger(__name__)
+        self.category_results = category_results
         self.all_candidates: List[ResearchCandidate] = []
-        self.categories_count: Dict[str, int] = defaultdict(int)
-        self.subcategories_count: Dict[str, int] = defaultdict(int)
 
-    def add_result(self, result: ResearchResult) -> None:
-        """
-        Add a research result to the aggregator.
-
-        Args:
-            result: Research result to add
-        """
-        self.results.append(result)
-        self.all_candidates.extend(result.candidates)
-
-        # Update category and subcategory counts
-        category = result.category
-        subcategory = result.subcategory
-
-        # Count candidates per category and subcategory
-        for candidate in result.candidates:
-            self.categories_count[category] += 1
-            if subcategory:
-                self.subcategories_count[f"{category}/{subcategory}"] += 1
-
-        self.logger.info(
-            f"Added result with {len(result.candidates)} candidates for query '{result.query}'"
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought="Aggregating and analyzing research results",
+            thought_number=1,
+            total_thoughts=2
         )
 
-    def get_all_candidates(self) -> List[ResearchCandidate]:
+        self._process_results()
+
+    def _process_results(self):
+        """Process the input results and extract candidates."""
+        self.logger.info(f"Processing results from {len(self.category_results)} categories")
+
+        for category, query_results in self.category_results.items():
+            self.logger.info(f"Processing category: {category} with {len(query_results)} queries")
+
+            for query, candidate_dicts in query_results.items():
+                # Convert dicts to ResearchCandidate objects
+                candidates = [
+                    ResearchCandidate.from_dict(candidate_dict)
+                    for candidate_dict in candidate_dicts
+                ]
+
+                self.all_candidates.extend(candidates)
+                self.logger.info(f"Added {len(candidates)} candidates from query '{query}'")
+
+        self.logger.info(f"Total candidates after aggregation: {len(self.all_candidates)}")
+
+    def aggregate(self) -> List[Dict]:
         """
-        Get all candidates from all results.
+        Aggregate the results and return a list of candidate dicts.
 
         Returns:
-            List of all candidates
+            List of candidate dictionaries
         """
-        return self.all_candidates
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought="Finalizing aggregated candidates",
+            thought_number=2,
+            total_thoughts=2
+        )
+
+        self.logger.info(f"Returning {len(self.all_candidates)} aggregated candidates")
+
+        # Convert all candidates to dicts
+        return [candidate.to_dict() for candidate in self.all_candidates]
 
     def save_aggregated_results(self, output_path: str) -> None:
         """
@@ -75,7 +87,7 @@ class Aggregator:
         aggregated_data = {
             "timestamp": datetime.now().isoformat(),
             "total_candidates": len(self.all_candidates),
-            "total_queries": len(self.results),
+            "total_queries": len(self.category_results),
             "categories": dict(self.categories_count),
             "subcategories": dict(self.subcategories_count),
             "results": [result.to_dict() for result in self.results],
@@ -103,7 +115,7 @@ class Aggregator:
             "# Awesome List Research Report",
             f"\nGenerated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"\n## Summary",
-            f"\n- **Total queries executed**: {len(self.results)}",
+            f"\n- **Total queries executed**: {len(self.category_results)}",
             f"- **Total candidates found**: {len(self.all_candidates)}",
             f"- **Categories researched**: {len(self.categories_count)}",
             f"- **Subcategories researched**: {len(self.subcategories_count)}",
@@ -112,12 +124,10 @@ class Aggregator:
         ]
 
         # Add queries
-        for i, result in enumerate(self.results, 1):
-            cat_info = f"*{result.category}*"
-            if result.subcategory:
-                cat_info += f" / *{result.subcategory}*"
-            report.append(f"\n{i}. **Query**: \"{result.query}\" ({cat_info})")
-            report.append(f"   - Found {len(result.candidates)} candidates")
+        for i, (category, query_results) in enumerate(self.category_results.items(), 1):
+            cat_info = f"*{category}*"
+            report.append(f"\n{i}. **Category**: {cat_info}")
+            report.append(f"   - Found {len(query_results)} queries")
 
         # Add candidate statistics by category
         report.append(f"\n## Candidate Resources by Category")
