@@ -10,6 +10,7 @@ from rapidfuzz import process as fuzz_process
 
 from awesome_list_researcher.awesome_parser import AwesomeLink
 from awesome_list_researcher.category_agent import ResearchCandidate
+from awesome_list_researcher.utils import mcp_handler
 
 
 class DuplicateFilter:
@@ -17,94 +18,75 @@ class DuplicateFilter:
     Filter out duplicate resources from research results.
     """
 
-    def __init__(self, logger: logging.Logger, similarity_threshold: float = 80.0):
+    def __init__(self, new_candidates: List[Dict], original_data: Dict):
         """
         Initialize the duplicate filter.
 
         Args:
-            logger: Logger instance
-            similarity_threshold: Threshold for fuzzy matching (0-100)
+            new_candidates: List of candidate dictionaries to filter
+            original_data: Original data from the awesome list
         """
-        self.logger = logger
-        self.similarity_threshold = similarity_threshold
+        self.logger = logging.getLogger(__name__)
+        self.similarity_threshold = 80.0
         self.existing_urls: Set[str] = set()
         self.existing_names: Set[str] = set()
+        self.new_candidates = [
+            ResearchCandidate.from_dict(candidate) for candidate in new_candidates
+        ]
+        self.duplicate_count = 0
+        self.total_count = len(self.new_candidates)
 
-    def add_existing_links(self, links: List[AwesomeLink]) -> None:
+        # Continue sequence thinking with MCP
+        mcp_handler.sequence_thinking(
+            thought="Filtering duplicate resources",
+            thought_number=1,
+            total_thoughts=3
+        )
+
+        # Extract existing links from original data
+        self._extract_existing_links(original_data)
+
+    def _extract_existing_links(self, original_data: Dict) -> None:
         """
-        Add existing links to the filter.
+        Extract existing links from original data.
 
         Args:
-            links: List of existing links
+            original_data: Original data dictionary
         """
-        for link in links:
-            self.existing_urls.add(link.url.lower())
-            self.existing_names.add(link.name.lower())
+        self.logger.info("Extracting existing links from original data")
 
-        self.logger.info(f"Added {len(links)} existing links to the duplicate filter")
+        # Process all categories
+        for category_data in original_data.get("categories", []):
+            category_name = category_data.get("name", "")
 
-    def _is_duplicate_url(self, url: str) -> bool:
+            # Process main category links
+            for link_data in category_data.get("links", []):
+                self._add_link_to_existing(link_data)
+
+            # Process subcategory links
+            for subcat_name, subcat_links in category_data.get("subcategories", {}).items():
+                for link_data in subcat_links:
+                    self._add_link_to_existing(link_data)
+
+        self.logger.info(f"Extracted {len(self.existing_urls)} existing URLs and {len(self.existing_names)} existing names")
+
+    def _add_link_to_existing(self, link_data: Dict) -> None:
         """
-        Check if a URL is a duplicate.
+        Add a link to the existing links sets.
 
         Args:
-            url: URL to check
-
-        Returns:
-            True if the URL is a duplicate
+            link_data: Link data dictionary
         """
-        # Normalize URL
-        norm_url = url.lower().rstrip("/")
+        url = link_data.get("url", "").lower().rstrip("/")
+        name = link_data.get("name", "").lower()
 
-        # Check exact matches
-        if norm_url in self.existing_urls:
-            return True
+        if url:
+            self.existing_urls.add(url)
 
-        # Add common variations (with/without www, http/https)
-        if norm_url.startswith("https://www."):
-            alt_url = norm_url.replace("https://www.", "https://")
-            if alt_url in self.existing_urls:
-                return True
-        elif norm_url.startswith("https://"):
-            alt_url = norm_url.replace("https://", "https://www.")
-            if alt_url in self.existing_urls:
-                return True
+        if name:
+            self.existing_names.add(name)
 
-        return False
-
-    def _is_duplicate_name(self, name: str) -> bool:
-        """
-        Check if a name is a duplicate using fuzzy matching.
-
-        Args:
-            name: Name to check
-
-        Returns:
-            True if the name is a duplicate
-        """
-        norm_name = name.lower()
-
-        # Check exact matches
-        if norm_name in self.existing_names:
-            return True
-
-        # Check fuzzy matches
-        if self.existing_names:
-            matches = fuzz_process.extract(
-                norm_name,
-                self.existing_names,
-                scorer=fuzz.ratio,
-                limit=5
-            )
-
-            for match, score, _ in matches:
-                if score >= self.similarity_threshold:
-                    self.logger.info(f"Fuzzy match: '{name}' matches '{match}' with score {score}")
-                    return True
-
-        return False
-
-    def is_duplicate(self, candidate: ResearchCandidate) -> bool:
+    def _is_duplicate(self, candidate: ResearchCandidate) -> bool:
         """
         Check if a candidate is a duplicate.
 
@@ -115,104 +97,77 @@ class DuplicateFilter:
             True if the candidate is a duplicate
         """
         # Check URL
-        if self._is_duplicate_url(candidate.url):
-            self.logger.info(f"Duplicate URL: {candidate.url}")
+        norm_url = candidate.url.lower().rstrip("/")
+        if norm_url in self.existing_urls:
             return True
 
-        # Check name
-        if self._is_duplicate_name(candidate.name):
-            self.logger.info(f"Duplicate name: {candidate.name}")
+        # Check name with fuzzy matching
+        norm_name = candidate.name.lower()
+        if norm_name in self.existing_names:
             return True
+
+        # Use fuzzy matching for names
+        if self.existing_names:
+            matches = fuzz_process.extract(
+                norm_name,
+                self.existing_names,
+                scorer=fuzz.ratio,
+                limit=5
+            )
+
+            for match, score, _ in matches:
+                if score >= self.similarity_threshold:
+                    self.logger.info(f"Fuzzy match: '{candidate.name}' matches '{match}' with score {score}")
+                    return True
 
         return False
 
-    def filter_duplicates(
-        self,
-        candidates: List[ResearchCandidate]
-    ) -> Tuple[List[ResearchCandidate], List[ResearchCandidate]]:
+    def filter(self) -> List[Dict]:
         """
-        Filter out duplicates from a list of candidates.
-
-        Args:
-            candidates: List of candidates to filter
+        Filter out duplicates from candidates.
 
         Returns:
-            Tuple of (unique candidates, duplicate candidates)
+            List of non-duplicate candidate dictionaries
         """
-        unique_candidates = []
-        duplicate_candidates = []
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought="Applying deduplication filters",
+            thought_number=2,
+            total_thoughts=3
+        )
 
-        for candidate in candidates:
-            if self.is_duplicate(candidate):
-                duplicate_candidates.append(candidate)
-            else:
-                unique_candidates.append(candidate)
-                # Add to existing URLs and names to avoid future duplicates
+        filtered_candidates = []
+
+        for candidate in self.new_candidates:
+            if not self._is_duplicate(candidate):
+                filtered_candidates.append(candidate)
+
+                # Add to sets to avoid duplicates within the new candidates
                 self.existing_urls.add(candidate.url.lower().rstrip("/"))
                 self.existing_names.add(candidate.name.lower())
+            else:
+                self.duplicate_count += 1
 
-        duplicate_rate = len(duplicate_candidates) / len(candidates) if candidates else 0
-
-        self.logger.info(
-            f"Filtered {len(duplicate_candidates)} duplicates out of {len(candidates)} candidates "
-            f"({duplicate_rate:.2%} duplicate rate)"
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought=f"Found {self.duplicate_count} duplicates out of {self.total_count} candidates",
+            thought_number=3,
+            total_thoughts=3
         )
 
-        # Warn if the duplicate rate is > 30%
-        if duplicate_rate > 0.3:
-            self.logger.warning(
-                f"High duplicate rate ({duplicate_rate:.2%}). Consider refining search queries."
-            )
+        self.logger.info(f"Filtered out {self.duplicate_count} duplicates from {self.total_count} candidates")
 
-        return unique_candidates, duplicate_candidates
+        # Convert back to dictionary representation
+        return [candidate.to_dict() for candidate in filtered_candidates]
 
-    def filter_duplicates_among_candidates(
-        self,
-        candidates: List[ResearchCandidate]
-    ) -> List[ResearchCandidate]:
+    def get_duplicate_ratio(self) -> float:
         """
-        Filter out duplicates among candidates themselves.
-
-        Args:
-            candidates: List of candidates to filter
+        Get the ratio of duplicates to total candidates.
 
         Returns:
-            List of unique candidates
+            Duplicate ratio as a percentage
         """
-        unique_candidates = []
-        seen_urls = set()
-        seen_names = set()
+        if self.total_count == 0:
+            return 0.0
 
-        for candidate in candidates:
-            # Check for URL duplicates
-            norm_url = candidate.url.lower().rstrip("/")
-            if norm_url in seen_urls:
-                self.logger.info(f"Duplicate URL among candidates: {candidate.url}")
-                continue
-
-            # Check for name duplicates
-            is_duplicate = False
-
-            for existing_name in seen_names:
-                similarity = fuzz.ratio(candidate.name.lower(), existing_name)
-                if similarity >= self.similarity_threshold:
-                    self.logger.info(
-                        f"Duplicate name among candidates: '{candidate.name}' matches '{existing_name}' "
-                        f"with score {similarity}"
-                    )
-                    is_duplicate = True
-                    break
-
-            if is_duplicate:
-                continue
-
-            # Add candidate to unique list and update seen sets
-            unique_candidates.append(candidate)
-            seen_urls.add(norm_url)
-            seen_names.add(candidate.name.lower())
-
-        self.logger.info(
-            f"Filtered {len(candidates) - len(unique_candidates)} duplicates among candidates"
-        )
-
-        return unique_candidates
+        return (self.duplicate_count / self.total_count) * 100.0
