@@ -351,11 +351,7 @@ class AwesomeListResearcher:
             )
 
             # 6. Validate new links
-            validator = Validator(
-                filtered_results,
-                model_name=self.args.model_validator,
-                cost_ceiling=self.args.cost_ceiling - self.total_cost
-            )
+            validator = Validator(filtered_results)
 
             # Check cost ceiling
             estimated_cost = validator.estimate_cost()
