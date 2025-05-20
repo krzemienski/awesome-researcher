@@ -6,11 +6,9 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Any, Optional
 
 import requests
-from openai import OpenAI
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -19,42 +17,40 @@ from tenacity import (
 )
 
 from awesome_list_researcher.category_agent import ResearchCandidate
-from awesome_list_researcher.utils.cost_guard import CostGuard
-from awesome_list_researcher.utils.logging import APICallLogRecord
+from awesome_list_researcher.utils import mcp_handler
 
 
 class Validator:
     """
     Validator for candidate resources.
+
+    This implementation uses MCP tools to maintain chain-of-thought reasoning.
     """
 
-    def __init__(
-        self,
-        model: str,
-        api_client: OpenAI,
-        cost_guard: CostGuard,
-        logger: logging.Logger,
-        min_stars: int = 100
-    ):
+    def __init__(self, candidates: List[Dict], min_stars: int = 100):
         """
         Initialize the validator.
 
         Args:
-            model: OpenAI model to use
-            api_client: OpenAI client
-            cost_guard: Cost guard for tracking API costs
-            logger: Logger instance
+            candidates: List of candidate dictionaries to validate
             min_stars: Minimum number of GitHub stars for a repository
         """
-        self.model = model
-        self.api_client = api_client
-        self.cost_guard = cost_guard
-        self.logger = logger
+        self.logger = logging.getLogger(__name__)
+        self.candidates = [ResearchCandidate.from_dict(candidate) for candidate in candidates]
         self.min_stars = min_stars
+        self.validated = []
+        self.rejected = []
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Awesome-List-Researcher/0.1.0"
         })
+
+        # Continue sequence thinking with MCP
+        mcp_handler.sequence_thinking(
+            thought=f"Validating {len(self.candidates)} candidate resources",
+            thought_number=1,
+            total_thoughts=3
+        )
 
     @retry(
         retry=retry_if_exception_type(requests.exceptions.RequestException),
@@ -98,140 +94,57 @@ class Validator:
         """
         return re.match(r"https://github\.com/[^/]+/[^/]+/?$", url) is not None
 
-    def _cleanup_description(
-        self,
-        candidate: ResearchCandidate
-    ) -> Tuple[str, int]:
+    def _normalize_description(self, description: str) -> str:
         """
-        Clean up and normalize the description of a candidate resource.
+        Normalize a resource description.
 
         Args:
-            candidate: Candidate resource to clean up
+            description: Description to normalize
 
         Returns:
-            Tuple of (cleaned description, tokens used)
+            Normalized description
         """
-        name = candidate.name
-        description = candidate.description
-        category = candidate.category
-        subcategory = candidate.subcategory or ""
+        # Remove quotes and periods at the end
+        description = description.strip('"\'')
+        description = description.rstrip(".")
 
-        # Check if the description needs cleanup
-        if (
-            len(description) <= 100 and
-            description[0].isupper() and
-            not description.endswith(".")
-        ):
-            # No cleanup needed
-            return description, 0
+        # Limit to 100 characters
+        if len(description) > 100:
+            description = description[:97] + "..."
 
-        system_prompt = """
-You are a description cleaner for the Awesome List project. Your task is to reformat and improve
-resource descriptions following these rules:
+        return description
 
-1. Make the description clear, concise, and informative
-2. Use sentence case (capitalize the first letter only)
-3. Keep it under 100 characters (shorter is better)
-4. Don't include a period at the end
-5. Avoid promotional language or value claims (like "best" or "amazing")
-6. Focus on what the resource DOES, not why it's good
-7. Use present tense
-"""
-
-        user_prompt = f"""
-Resource: {name}
-Category: {category}{f", Subcategory: {subcategory}" if subcategory else ""}
-Current description: "{description}"
-
-Please rewrite this description following the rules. Return ONLY the cleaned-up description text.
-"""
-
-        # Check if the API call would exceed the cost ceiling
-        estimated_tokens = len(system_prompt.split()) + len(user_prompt.split()) + 50
-        if self.cost_guard.would_exceed_ceiling(self.model, estimated_tokens, estimated_tokens // 4):
-            self.logger.warning(f"Cost ceiling would be exceeded for cleaning description, skipping")
-            return description, 0
-
-        # Make the API call
-        start_time = time.time()
-
-        try:
-            completion = self.api_client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3,
-                max_tokens=100
-            )
-
-            # Update cost
-            self.cost_guard.update_from_completion(completion, self.model)
-
-            # Log full prompt and completion
-            latency = time.time() - start_time
-            api_log = APICallLogRecord(
-                agent_id="validator",
-                model=self.model,
-                prompt=f"System: {system_prompt}\nUser: {user_prompt}",
-                completion=completion.choices[0].message.content,
-                tokens=completion.usage.total_tokens,
-                cost_usd=self.cost_guard.total_cost_usd,
-                latency=latency
-            )
-
-            self.logger.info(f"API call log: {api_log.to_json()}")
-
-            # Get the cleaned description
-            cleaned_description = completion.choices[0].message.content.strip()
-
-            # Remove any quotes or period at the end
-            cleaned_description = cleaned_description.strip('"\'')
-            cleaned_description = cleaned_description.rstrip(".")
-
-            self.logger.info(f"Original description: '{description}'")
-            self.logger.info(f"Cleaned description: '{cleaned_description}'")
-
-            return cleaned_description, completion.usage.total_tokens
-
-        except Exception as e:
-            self.logger.error(f"Error cleaning description: {str(e)}")
-            return description, 0
-
-    def validate_candidates(
-        self,
-        candidates: List[ResearchCandidate]
-    ) -> Tuple[List[ResearchCandidate], List[ResearchCandidate]]:
+    def validate(self) -> List[Dict]:
         """
-        Validate a list of candidate resources.
-
-        Args:
-            candidates: List of candidate resources to validate
+        Validate all candidates.
 
         Returns:
-            Tuple of (valid candidates, invalid candidates)
+            List of validated candidate dictionaries
         """
-        valid_candidates = []
-        invalid_candidates = []
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought="Checking resource URLs and descriptions",
+            thought_number=2,
+            total_thoughts=3
+        )
 
-        for i, candidate in enumerate(candidates):
-            self.logger.info(f"Validating candidate {i+1}/{len(candidates)}: {candidate.name}")
+        for i, candidate in enumerate(self.candidates):
+            self.logger.info(f"Validating candidate {i+1}/{len(self.candidates)}: {candidate.name}")
 
             # Check if the URL is accessible
             try:
                 url_accessible = self._check_url_accessibility(candidate.url)
                 if not url_accessible:
-                    self.logger.warning(f"URL {candidate.url} is not accessible, skipping")
-                    invalid_candidates.append(candidate)
+                    self.logger.warning(f"URL {candidate.url} is not accessible, rejected")
+                    self.rejected.append(candidate)
                     continue
             except Exception as e:
                 self.logger.error(f"Error checking URL {candidate.url}: {str(e)}")
-                invalid_candidates.append(candidate)
+                self.rejected.append(candidate)
                 continue
 
-            # Clean up the description
-            cleaned_description, tokens_used = self._cleanup_description(candidate)
+            # Normalize the description
+            cleaned_description = self._normalize_description(candidate.description)
 
             # Create a new candidate with the cleaned description
             cleaned_candidate = ResearchCandidate(
@@ -243,28 +156,27 @@ Please rewrite this description following the rules. Return ONLY the cleaned-up 
                 source_query=candidate.source_query
             )
 
-            valid_candidates.append(cleaned_candidate)
+            self.validated.append(cleaned_candidate)
 
-        self.logger.info(
-            f"Validated {len(candidates)} candidates: "
-            f"{len(valid_candidates)} valid, {len(invalid_candidates)} invalid"
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought=f"Validated {len(self.candidates)} candidates: {len(self.validated)} valid, {len(self.rejected)} rejected",
+            thought_number=3,
+            total_thoughts=3
         )
 
-        return valid_candidates, invalid_candidates
+        self.logger.info(
+            f"Validated {len(self.candidates)} candidates: "
+            f"{len(self.validated)} valid, {len(self.rejected)} rejected"
+        )
 
-    def save_validated_candidates(self, candidates: List[ResearchCandidate], output_path: str) -> None:
-        """
-        Save validated candidates to a JSON file.
+        # Convert to dictionaries
+        return [candidate.to_dict() for candidate in self.validated]
 
-        Args:
-            candidates: List of validated candidates
-            output_path: Path to save the candidates
-        """
-        # Convert to list of dictionaries
-        candidates_data = [c.to_dict() for c in candidates]
+    def get_cost(self) -> float:
+        """Mock method to maintain API compatibility with main.py."""
+        return 0.0
 
-        # Write the file
-        with open(output_path, "w") as f:
-            json.dump(candidates_data, f, indent=2)
-
-        self.logger.info(f"Saved {len(candidates)} validated candidates to {output_path}")
+    def estimate_cost(self) -> float:
+        """Mock method to maintain API compatibility with main.py."""
+        return len(self.candidates) * 0.01
