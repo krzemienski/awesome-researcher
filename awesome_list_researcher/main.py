@@ -1,398 +1,489 @@
 """
-Main orchestrator for the Awesome-List Researcher.
+Main module for the Awesome-List Researcher.
+
+This module serves as the entry point for the application, orchestrating the
+various components to find new resources for an Awesome-List repository.
 """
 
-import argparse
-import datetime
-import json
-import logging
 import os
-import random
-import signal
 import sys
+import signal
+import logging
+import argparse
+import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+import datetime
+from typing import Dict, List, Any, Optional, Tuple
 
-import dotenv
-import httpx
-from openai import OpenAI
+# Import MCP tools
+from awesome_list_researcher.utils import (
+    load_mcp_tools,
+    mcp_handler,
+    memory_store,
+    context_store,
+    create_dependency_graph,
+    create_file_graph
+)
 
-from awesome_list_researcher.aggregator import Aggregator
-from awesome_list_researcher.awesome_parser import AwesomeList, MarkdownParser
-from awesome_list_researcher.category_agent import CategoryResearchAgent
-from awesome_list_researcher.duplicate_filter import DuplicateFilter
+# Import core components
+from awesome_list_researcher.awesome_parser import AwesomeParser
 from awesome_list_researcher.planner_agent import PlannerAgent
-from awesome_list_researcher.renderer import Renderer
-from awesome_list_researcher.utils.cost_guard import CostGuard
-from awesome_list_researcher.utils.github import GitHubAPI, parse_github_url
-from awesome_list_researcher.utils.logging import setup_logger
+from awesome_list_researcher.category_agent import CategoryResearchAgent
+from awesome_list_researcher.aggregator import Aggregator
+from awesome_list_researcher.duplicate_filter import DuplicateFilter
 from awesome_list_researcher.validator import Validator
+from awesome_list_researcher.renderer import Renderer
 
+# Create logger
+logger = logging.getLogger(__name__)
 
-class TimeoutError(Exception):
-    """Exception raised when the wall-time limit is reached."""
-    pass
+class AwesomeListResearcher:
+    """
+    Main class for the Awesome-List Researcher application.
 
+    This class orchestrates the workflow for researching and finding
+    new resources for an Awesome-List repository.
+    """
 
-def timeout_handler(signum, frame):
-    """Signal handler for the wall-time limit."""
-    raise TimeoutError("Wall-time limit reached")
+    def __init__(self, args: argparse.Namespace):
+        """
+        Initialize the Awesome-List Researcher.
 
+        Args:
+            args: Command-line arguments
+        """
+        self.args = args
+        self.start_time = time.time()
+        self.total_cost = 0.0
+        self.run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-@dataclass
-class AppConfig:
-    """Configuration for the Awesome-List Researcher."""
-    repo_url: str
-    wall_time: int = 600
-    cost_ceiling: float = 10.0
-    output_dir: str = "runs"
-    seed: Optional[int] = None
-    model_planner: str = "gpt-4.1"
-    model_researcher: str = "o3"
-    model_validator: str = "o3"
+        # Create output directory
+        self.output_dir = os.path.join(args.output_dir, self.run_id)
+        os.makedirs(self.output_dir, exist_ok=True)
 
+        # Initialize MCP tools
+        self._init_mcp_tools()
 
-def parse_args() -> AppConfig:
-    """Parse command-line arguments."""
+        # Setup logging
+        self._setup_logging()
+
+        # Setup wall-time guard
+        if args.wall_time > 0:
+            signal.signal(signal.SIGALRM, self._wall_time_handler)
+            signal.alarm(args.wall_time)
+
+        # Log initialization
+        logger.info(f"Initialized Awesome-List Researcher with run ID: {self.run_id}")
+        logger.info(f"Arguments: {args}")
+
+    def _init_mcp_tools(self):
+        """Initialize MCP tools as required by Cursor Rules."""
+        # Load all MCP tools
+        mcp_data = load_mcp_tools()
+
+        # Store in context
+        context_store.set("repo_tree", mcp_data["repo_tree"])
+        context_store.set("code_map", mcp_data["code_map"])
+        context_store.set("openai_context", mcp_data["context"])
+
+        # Create and store dependency graph
+        dependency_graph = create_dependency_graph()
+        context_store.set("dependency_graph", dependency_graph.to_dict())
+
+        # Create and store file graph
+        file_graph = create_file_graph()
+        context_store.set("file_graph", file_graph.to_dict())
+
+        # Store the run configuration in memory
+        memory_store.put("run_config", vars(self.args))
+
+        # Initialize sequence thinking in MCP handler
+        mcp_handler.sequence_thinking(
+            thought="Initializing Awesome-List Researcher workflow",
+            thought_number=1,
+            total_thoughts=7
+        )
+
+    def _setup_logging(self):
+        """Set up logging configuration."""
+        log_file = os.path.join(self.output_dir, "agent.log")
+
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+
+        logger.info(f"Logging to {log_file}")
+
+    def _wall_time_handler(self, signum, frame):
+        """Handle wall-time exceeded signal."""
+        elapsed = time.time() - self.start_time
+        logger.warning(f"Wall-time limit of {self.args.wall_time}s exceeded after {elapsed:.2f}s")
+
+        # Create a summary report
+        self._create_summary_report(aborted=True)
+
+        # Exit with non-zero status
+        sys.exit(1)
+
+    def _check_cost_ceiling(self, estimated_cost: float) -> bool:
+        """
+        Check if an operation would exceed the cost ceiling.
+
+        Args:
+            estimated_cost: Estimated cost of the operation
+
+        Returns:
+            True if the operation is allowed, False if it would exceed the ceiling
+        """
+        if self.args.cost_ceiling <= 0:
+            return True
+
+        if self.total_cost + estimated_cost >= self.args.cost_ceiling:
+            logger.warning(f"Cost ceiling of ${self.args.cost_ceiling:.2f} would be exceeded: "
+                          f"current ${self.total_cost:.4f} + estimated ${estimated_cost:.4f}")
+            return False
+
+        return True
+
+    def _update_cost(self, cost: float):
+        """
+        Update the total cost.
+
+        Args:
+            cost: Cost to add
+        """
+        self.total_cost += cost
+        logger.info(f"Added cost: ${cost:.4f}, new total: ${self.total_cost:.4f}")
+
+        # Store in memory for persistence
+        memory_store.put("total_cost", self.total_cost)
+
+    def _create_summary_report(self, aborted: bool = False):
+        """
+        Create a summary report of the run.
+
+        Args:
+            aborted: Whether the run was aborted
+        """
+        elapsed = time.time() - self.start_time
+
+        summary = {
+            "run_id": self.run_id,
+            "args": vars(self.args),
+            "elapsed_seconds": elapsed,
+            "total_cost_usd": self.total_cost,
+            "aborted": aborted,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+        # Add additional stats if available
+        if context_store.has("stats"):
+            summary["stats"] = context_store.get("stats")
+
+        # Write to file
+        report_file = os.path.join(self.output_dir, "research_report.md")
+        with open(report_file, "w") as f:
+            f.write(f"# Awesome-List Research Report\n\n")
+            f.write(f"**Run ID:** {self.run_id}\n")
+            f.write(f"**Timestamp:** {summary['timestamp']}\n")
+            f.write(f"**Elapsed time:** {elapsed:.2f}s\n")
+            f.write(f"**Total cost:** ${self.total_cost:.4f}\n")
+            f.write(f"**Repository URL:** {self.args.repo_url}\n")
+
+            if aborted:
+                f.write(f"\n**ABORTED:** The run was aborted due to exceeding limits.\n")
+
+            # Add stats section if available
+            if "stats" in summary:
+                f.write(f"\n## Statistics\n\n")
+                for key, value in summary["stats"].items():
+                    f.write(f"- **{key}:** {value}\n")
+
+            # Add categories section if available
+            if context_store.has("categories"):
+                categories = context_store.get("categories")
+                f.write(f"\n## Categories Researched\n\n")
+                for category in categories:
+                    f.write(f"- {category}\n")
+
+        logger.info(f"Summary report written to {report_file}")
+        return summary
+
+    def run(self):
+        """
+        Run the Awesome-List Researcher workflow.
+        """
+        try:
+            # Continue sequence thinking
+            mcp_handler.sequence_thinking(
+                thought="Parsing the Awesome-List README",
+                thought_number=2,
+                total_thoughts=7
+            )
+
+            # 1. Parse the README
+            parser = AwesomeParser(self.args.repo_url)
+            original_data = parser.parse()
+            original_json_path = os.path.join(self.output_dir, "original.json")
+            with open(original_json_path, "w") as f:
+                json.dump(original_data, f, indent=2)
+            logger.info(f"Original data saved to {original_json_path}")
+
+            # Store in context
+            context_store.set("original_data", original_data)
+            context_store.set("categories", parser.get_categories())
+
+            # Continue sequence thinking
+            mcp_handler.sequence_thinking(
+                thought="Planning research queries",
+                thought_number=3,
+                total_thoughts=7
+            )
+
+            # 2. Generate research plan
+            planner = PlannerAgent(
+                categories=original_data.get("categories", []),
+                queries_per_category=3,
+                seed=self.args.seed
+            )
+
+            # Generate plan
+            plan_data = {}
+            plan_queries = planner.generate_queries()
+
+            # Group queries by category
+            for query in plan_queries:
+                category = query.get("category")
+                if category not in plan_data:
+                    plan_data[category] = []
+                plan_data[category].append(query.get("query"))
+
+            # Save plan
+            plan_json_path = os.path.join(self.output_dir, "plan.json")
+            with open(plan_json_path, "w") as f:
+                json.dump(plan_data, f, indent=2)
+            logger.info(f"Research plan saved to {plan_json_path}")
+
+            # Store in context
+            context_store.set("plan_data", plan_data)
+
+            # Continue sequence thinking
+            mcp_handler.sequence_thinking(
+                thought="Researching new resources for each category",
+                thought_number=4,
+                total_thoughts=7
+            )
+
+            # 3. Research categories
+            candidates = {}
+            for category, queries in plan_data.items():
+                # Create a category agent
+                category_agent = CategoryResearchAgent(
+                    category=category,
+                    queries=queries,
+                    model_name=self.args.model_researcher,
+                    cost_ceiling=self.args.cost_ceiling - self.total_cost
+                )
+
+                # Check cost ceiling
+                estimated_cost = category_agent.estimate_cost()
+                if not self._check_cost_ceiling(estimated_cost):
+                    logger.warning(f"Skipping category {category} due to cost ceiling")
+                    continue
+
+                # Research the category
+                category_results = category_agent.research()
+                self._update_cost(category_agent.get_cost())
+
+                # Save category results
+                category_json_path = os.path.join(self.output_dir, f"candidate_{category.lower().replace(' ', '_')}.json")
+                with open(category_json_path, "w") as f:
+                    json.dump(category_results, f, indent=2)
+                logger.info(f"Category results saved to {category_json_path}")
+
+                # Add to candidates
+                candidates[category] = category_results
+
+            # Store in context
+            context_store.set("candidates", candidates)
+
+            # Continue sequence thinking
+            mcp_handler.sequence_thinking(
+                thought="Aggregating and filtering candidates",
+                thought_number=5,
+                total_thoughts=7
+            )
+
+            # 4. Aggregate results
+            aggregator = Aggregator(candidates)
+            aggregated_results = aggregator.aggregate()
+
+            # 5. Filter duplicates
+            duplicate_filter = DuplicateFilter(aggregated_results, original_data)
+            filtered_results = duplicate_filter.filter()
+
+            # Check duplicate ratio
+            dupe_ratio = duplicate_filter.get_duplicate_ratio()
+            context_store.set("stats", {
+                "total_candidates": len(aggregated_results),
+                "duplicates_found": len(aggregated_results) - len(filtered_results),
+                "duplicate_ratio": f"{dupe_ratio:.2f}%",
+                "new_links_found": len(filtered_results)
+            })
+
+            # Save new links
+            new_links_path = os.path.join(self.output_dir, "new_links.json")
+            with open(new_links_path, "w") as f:
+                json.dump(filtered_results, f, indent=2)
+            logger.info(f"New links saved to {new_links_path}")
+
+            # Continue sequence thinking
+            mcp_handler.sequence_thinking(
+                thought="Validating candidate resources",
+                thought_number=6,
+                total_thoughts=7
+            )
+
+            # 6. Validate new links
+            validator = Validator(
+                filtered_results,
+                model_name=self.args.model_validator,
+                cost_ceiling=self.args.cost_ceiling - self.total_cost
+            )
+
+            # Check cost ceiling
+            estimated_cost = validator.estimate_cost()
+            if not self._check_cost_ceiling(estimated_cost):
+                logger.error("Cannot proceed with validation due to cost ceiling")
+                self._create_summary_report(aborted=True)
+                return 1
+
+            validated_results = validator.validate()
+            self._update_cost(validator.get_cost())
+
+            # Save validated links
+            validated_links_path = os.path.join(self.output_dir, "validated_links.json")
+            with open(validated_links_path, "w") as f:
+                json.dump(validated_results, f, indent=2)
+            logger.info(f"Validated links saved to {validated_links_path}")
+
+            # Continue sequence thinking
+            mcp_handler.sequence_thinking(
+                thought="Rendering updated Awesome-List",
+                thought_number=7,
+                total_thoughts=7
+            )
+
+            # 7. Render updated list
+            renderer = Renderer(original_data, validated_results)
+            updated_list = renderer.render()
+
+            # Save updated list
+            updated_list_path = os.path.join(self.output_dir, "updated_list.md")
+            with open(updated_list_path, "w") as f:
+                f.write(updated_list)
+            logger.info(f"Updated list saved to {updated_list_path}")
+
+            # Create summary report
+            self._create_summary_report()
+
+            logger.info(f"Awesome-List Researcher completed successfully in {time.time() - self.start_time:.2f}s")
+            return 0
+
+        except Exception as e:
+            logger.exception(f"Error running Awesome-List Researcher: {e}")
+            self._create_summary_report(aborted=True)
+            return 1
+        finally:
+            # Cancel the wall-time alarm if set
+            if self.args.wall_time > 0:
+                signal.alarm(0)
+
+def parse_args():
+    """
+    Parse command-line arguments.
+
+    Returns:
+        Parsed arguments namespace
+    """
     parser = argparse.ArgumentParser(description="Awesome-List Researcher")
 
     parser.add_argument(
         "--repo_url",
         type=str,
         required=True,
-        help="GitHub URL of the Awesome List repository"
+        help="GitHub URL of the Awesome-List repository"
     )
 
     parser.add_argument(
         "--wall_time",
         type=int,
         default=600,
-        help="Maximum execution time in seconds (default: 600)"
+        help="Wall-time limit in seconds (default: 600)"
     )
 
     parser.add_argument(
         "--cost_ceiling",
         type=float,
         default=10.0,
-        help="Maximum OpenAI API cost in USD (default: 10.0)"
+        help="Cost ceiling in USD (default: 10.0)"
     )
 
     parser.add_argument(
         "--output_dir",
         type=str,
         default="runs",
-        help="Directory for output artifacts (default: runs)"
+        help="Output directory for results (default: runs)"
     )
 
     parser.add_argument(
         "--seed",
         type=int,
-        default=None,
-        help="Random seed for deterministic behavior (default: random)"
+        help="Random seed for reproducibility"
     )
 
     parser.add_argument(
         "--model_planner",
         type=str,
         default="gpt-4.1",
-        help="Model for planning research queries (default: gpt-4.1)"
+        help="Model to use for planning (default: gpt-4.1)"
     )
 
     parser.add_argument(
         "--model_researcher",
         type=str,
         default="o3",
-        help="Model for researching new resources (default: o3)"
+        help="Model to use for research (default: o3)"
     )
 
     parser.add_argument(
         "--model_validator",
         type=str,
         default="o3",
-        help="Model for validating new resources (default: o3)"
+        help="Model to use for validation (default: o3)"
     )
 
-    args = parser.parse_args()
-
-    return AppConfig(
-        repo_url=args.repo_url,
-        wall_time=args.wall_time,
-        cost_ceiling=args.cost_ceiling,
-        output_dir=args.output_dir,
-        seed=args.seed,
-        model_planner=args.model_planner,
-        model_researcher=args.model_researcher,
-        model_validator=args.model_validator
-    )
-
-
-def setup_output_directory(output_dir: str) -> str:
-    """Set up the output directory with a timestamp subdirectory."""
-    # Create a timestamp for the run
-    timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-
-    # Create the output directory
-    run_dir = os.path.join(output_dir, timestamp)
-    os.makedirs(run_dir, exist_ok=True)
-
-    return run_dir
-
+    return parser.parse_args()
 
 def main():
-    """Main entry point."""
-    # Load environment variables
-    dotenv.load_dotenv()
+    """
+    Main entry point for the Awesome-List Researcher.
 
+    Returns:
+        Exit code (0 for success, non-zero for failure)
+    """
     # Parse command-line arguments
-    config = parse_args()
+    args = parse_args()
 
-    # Set up the output directory
-    run_dir = setup_output_directory(config.output_dir)
-
-    # Set up logging
-    log_file = os.path.join(run_dir, "agent.log")
-    logger = setup_logger("awesome_researcher", log_file)
-
-    # Log the configuration
-    logger.info(f"Starting Awesome-List Researcher with configuration:")
-    logger.info(f"  Repo URL: {config.repo_url}")
-    logger.info(f"  Wall time: {config.wall_time} seconds")
-    logger.info(f"  Cost ceiling: ${config.cost_ceiling}")
-    logger.info(f"  Output directory: {run_dir}")
-    logger.info(f"  Seed: {config.seed or 'random'}")
-    logger.info(f"  Model (planner): {config.model_planner}")
-    logger.info(f"  Model (researcher): {config.model_researcher}")
-    logger.info(f"  Model (validator): {config.model_validator}")
-
-    # Check for OpenAI API key
-    openai_api_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_api_key:
-        logger.error("OPENAI_API_KEY environment variable not set")
-        print("Error: OPENAI_API_KEY environment variable not set")
-        sys.exit(1)
-
-    # Set up the wall-time limit
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(config.wall_time)
-
-    # Set random seed if provided
-    if config.seed is not None:
-        random.seed(config.seed)
-
-    try:
-        # Initialize the OpenAI client with custom timeout settings
-        logger.info("Initializing OpenAI client with custom timeout settings")
-        http_client = httpx.Client(
-            timeout=httpx.Timeout(
-                connect=10.0,  # connection timeout
-                read=180.0,    # read timeout
-                write=10.0,    # write timeout
-                pool=5.0       # pool timeout
-            ),
-            limits=httpx.Limits(
-                max_connections=10,
-                max_keepalive_connections=5
-            )
-        )
-
-        client = OpenAI(
-            api_key=openai_api_key,
-            http_client=http_client
-        )
-        logger.info("OpenAI client initialized successfully")
-
-        # Initialize the cost guard
-        cost_guard = CostGuard(
-            cost_ceiling=config.cost_ceiling,
-            logger=logger
-        )
-        logger.info(f"Cost guard initialized with ceiling ${config.cost_ceiling}")
-
-        # Initialize the GitHub API
-        github_api = GitHubAPI(logger)
-
-        # Step 1: Parse the GitHub URL and get the raw README
-        logger.info(f"Fetching README from {config.repo_url}")
-        owner, repo = parse_github_url(config.repo_url)
-        readme_content = github_api.get_raw_readme(owner, repo)
-        logger.info(f"Successfully fetched README.md ({len(readme_content)} bytes)")
-
-        # Save the raw README
-        readme_path = os.path.join(run_dir, "README.md")
-        with open(readme_path, "w") as f:
-            f.write(readme_content)
-        logger.info(f"Saved README.md to {readme_path}")
-
-        # Step 2: Parse the README to JSON
-        logger.info("Parsing README to structured format")
-        markdown_parser = MarkdownParser(logger)
-        awesome_list = markdown_parser.parse_markdown(readme_content)
-        logger.info(f"Parsed {len(awesome_list.categories)} categories from README")
-
-        # Save the original list as JSON
-        original_json_path = os.path.join(run_dir, "original.json")
-        with open(original_json_path, "w") as f:
-            f.write(awesome_list.to_json())
-        logger.info(f"Saved original list as JSON to {original_json_path}")
-
-        # Step 3: Generate a research plan
-        logger.info("Generating research plan")
-        planner_agent = PlannerAgent(
-            model=config.model_planner,
-            api_client=client,
-            cost_guard=cost_guard,
-            logger=logger,
-            seed=config.seed
-        )
-
-        research_plan = planner_agent.generate_plan(awesome_list)
-        logger.info(f"Generated research plan with {len(research_plan.queries)} queries")
-
-        # Save the research plan
-        plan_path = os.path.join(run_dir, "plan.json")
-        with open(plan_path, "w") as f:
-            f.write(research_plan.to_json())
-        logger.info(f"Saved research plan to {plan_path}")
-
-        # Step 4: Execute the research plan with parallel agents
-        logger.info(f"Executing research plan with {len(research_plan.queries)} queries")
-        category_agent = CategoryResearchAgent(
-            model=config.model_researcher,
-            api_client=client,
-            cost_guard=cost_guard,
-            logger=logger
-        )
-
-        aggregator = Aggregator(logger)
-
-        # Execute queries in parallel
-        logger.info(f"Starting parallel execution with max 5 workers")
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_query = {
-                executor.submit(category_agent.research_query, query): query
-                for query in research_plan.queries
-            }
-
-            completed = 0
-            total = len(future_to_query)
-
-            for future in as_completed(future_to_query):
-                query = future_to_query[future]
-                try:
-                    result = future.result()
-                    aggregator.add_result(result)
-                    completed += 1
-                    logger.info(f"Completed query {completed}/{total}: '{query.query}'")
-
-                    # Save the result
-                    result_path = os.path.join(
-                        run_dir,
-                        f"candidate_{query.category.lower().replace(' ', '_')}.json"
-                    )
-                    with open(result_path, "w") as f:
-                        f.write(result.to_json())
-                    logger.info(f"Saved query result to {result_path}")
-
-                except Exception as e:
-                    logger.error(f"Error researching query '{query.query}': {str(e)}")
-                    import traceback
-                    logger.error(f"Query error details: {traceback.format_exc()}")
-
-        # Save the aggregated results
-        aggregated_path = os.path.join(run_dir, "aggregated_results.json")
-        aggregator.save_aggregated_results(aggregated_path)
-        logger.info(f"Saved aggregated results to {aggregated_path}")
-
-        # Generate a research report
-        report_path = os.path.join(run_dir, "research_report.md")
-        aggregator.generate_research_report(report_path)
-        logger.info(f"Generated research report at {report_path}")
-
-        # Step 5: Filter duplicates
-        logger.info("Filtering duplicates")
-        duplicate_filter = DuplicateFilter(logger)
-
-        # Extract all links from the original list
-        all_links = []
-        for category in awesome_list.categories:
-            all_links.extend(category.links)
-            for subcategory_links in category.subcategories.values():
-                all_links.extend(subcategory_links)
-
-        # Add existing links to the filter
-        duplicate_filter.add_existing_links(all_links)
-
-        # Filter duplicates among candidates
-        candidates = aggregator.get_all_candidates()
-        candidates = duplicate_filter.filter_duplicates_among_candidates(candidates)
-
-        # Filter duplicates against the original list
-        unique_candidates, duplicate_candidates = duplicate_filter.filter_duplicates(candidates)
-
-        # Step 6: Validate the candidates
-        logger.info(f"Validating {len(unique_candidates)} candidates")
-        validator = Validator(
-            model=config.model_validator,
-            api_client=client,
-            cost_guard=cost_guard,
-            logger=logger
-        )
-
-        valid_candidates, invalid_candidates = validator.validate_candidates(unique_candidates)
-
-        # Save the valid candidates
-        new_links_path = os.path.join(run_dir, "new_links.json")
-        validator.save_validated_candidates(valid_candidates, new_links_path)
-
-        # Step 7: Render the updated list
-        logger.info(f"Rendering updated list with {len(valid_candidates)} new links")
-        renderer = Renderer(logger)
-
-        updated_list_path = os.path.join(run_dir, "updated_list.md")
-        lint_result = renderer.render_updated_list(
-            awesome_list,
-            valid_candidates,
-            updated_list_path
-        )
-
-        # Cancel the wall-time alarm
-        signal.alarm(0)
-
-        # Log the results
-        logger.info("=== Results ===")
-        logger.info(f"Total queries: {len(research_plan.queries)}")
-        logger.info(f"Total candidates: {len(candidates)}")
-        logger.info(f"Unique candidates: {len(unique_candidates)}")
-        logger.info(f"Validated candidates: {len(valid_candidates)}")
-        logger.info(f"New links added: {len(valid_candidates)}")
-        logger.info(f"Total API cost: ${cost_guard.total_cost_usd:.2f}")
-        logger.info(f"awesome-lint validation: {'Passed' if lint_result else 'Failed'}")
-        logger.info("==============")
-
-        # Print the results to the console
-        print(f"\n=== Results ===")
-        print(f"Total queries: {len(research_plan.queries)}")
-        print(f"Total candidates: {len(candidates)}")
-        print(f"New links added: {len(valid_candidates)}")
-        print(f"Total API cost: ${cost_guard.total_cost_usd:.2f}")
-        print(f"awesome-lint validation: {'Passed' if lint_result else 'Failed'}")
-        print(f"Output directory: {run_dir}")
-        print("==============")
-
-    except TimeoutError:
-        logger.error(f"Wall-time limit of {config.wall_time} seconds reached")
-        print(f"\nError: Wall-time limit of {config.wall_time} seconds reached")
-        sys.exit(1)
-
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        import traceback
-        logger.error(f"Error details: {traceback.format_exc()}")
-        print(f"\nError: {str(e)}")
-        sys.exit(1)
-
+    # Create and run the researcher
+    researcher = AwesomeListResearcher(args)
+    return researcher.run()
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
