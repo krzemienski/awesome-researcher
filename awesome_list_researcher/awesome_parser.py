@@ -6,6 +6,8 @@ import json
 import logging
 import re
 import subprocess
+import os
+import requests
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -458,3 +460,108 @@ class DuplicateDetector:
         """
         self.urls.add(link.url.lower())
         self.names.add(link.name.lower())
+
+
+class AwesomeParser:
+    """
+    Main parser class for Awesome-List repositories.
+
+    This class is responsible for fetching and parsing Awesome-List repositories
+    from GitHub URLs.
+    """
+
+    def __init__(self, repo_url: str):
+        """
+        Initialize the Awesome-List parser.
+
+        Args:
+            repo_url: GitHub repository URL
+        """
+        self.repo_url = repo_url
+        self.logger = logging.getLogger(__name__)
+        self.markdown_parser = MarkdownParser(self.logger)
+        self.awesome_list = None
+
+    def fetch_raw_content(self) -> str:
+        """
+        Fetch the raw README.md content from the GitHub repository.
+
+        Returns:
+            Raw README.md content
+        """
+        self.logger.info(f"Fetching raw content from {self.repo_url}")
+
+        # Parse GitHub URL to get owner and repo name
+        parts = self.repo_url.strip('/').split('/')
+        if len(parts) < 5 or parts[2] != 'github.com':
+            raise ValueError(f"Invalid GitHub URL: {self.repo_url}")
+
+        owner = parts[3]
+        repo = parts[4]
+
+        # Try to fetch from different branches
+        potential_urls = [
+            f"https://raw.githubusercontent.com/{owner}/{repo}/master/README.md",
+            f"https://raw.githubusercontent.com/{owner}/{repo}/main/README.md",
+            f"https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md"
+        ]
+
+        for url in potential_urls:
+            try:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    self.logger.info(f"Successfully fetched content from {url}")
+                    return response.text
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch {url}: {str(e)}")
+
+        raise ValueError(f"Could not fetch README.md from {self.repo_url}")
+
+    def parse(self) -> Dict:
+        """
+        Parse the Awesome-List repository.
+
+        Returns:
+            Dictionary representation of the Awesome-List
+        """
+        # Fetch raw content
+        content = self.fetch_raw_content()
+
+        # Parse markdown
+        self.awesome_list = self.markdown_parser.parse_markdown(content)
+
+        # Convert to dictionary
+        result = self.awesome_list.to_dict()
+
+        self.logger.info(f"Parsed Awesome-List: {self.awesome_list.title}")
+        return result
+
+    def get_categories(self) -> List[str]:
+        """
+        Get a list of all categories in the Awesome-List.
+
+        Returns:
+            List of category names
+        """
+        if not self.awesome_list:
+            raise ValueError("parse() must be called before get_categories()")
+
+        return [cat.name for cat in self.awesome_list.categories]
+
+    def get_all_links(self) -> List[AwesomeLink]:
+        """
+        Get a list of all links in the Awesome-List.
+
+        Returns:
+            List of AwesomeLink objects
+        """
+        if not self.awesome_list:
+            raise ValueError("parse() must be called before get_all_links()")
+
+        all_links = []
+        for category in self.awesome_list.categories:
+            all_links.extend(category.links)
+            for subcat_links in category.subcategories.values():
+                all_links.extend(subcat_links)
+
+        return all_links
