@@ -99,7 +99,6 @@ class BrowserTool:
         """
         self.logger.info(f"Performing web search: {query}")
 
-        # Perform a real Google search
         try:
             # Construct search URL for Google
             search_query = urllib.parse.quote_plus(f"{query} github library framework tool")
@@ -109,7 +108,7 @@ class BrowserTool:
 
             if response.status_code != 200:
                 self.logger.warning(f"Search failed with status {response.status_code}")
-                return self._get_fallback_results(query)
+                return []
 
             # Parse results
             soup = BeautifulSoup(response.text, "html.parser")
@@ -152,13 +151,13 @@ class BrowserTool:
                 self.logger.info(f"Found {len(results)} search results for query: {query}")
                 return results
 
-            # Fallback if parsing failed
-            return self._get_fallback_results(query)
+            # If no results are found or parsing failed, return empty list
+            self.logger.warning(f"No search results found for query: {query}")
+            return []
 
         except Exception as e:
             self.logger.error(f"Error performing search: {str(e)}")
-            # If search fails, include real libraries as fallbacks
-            return self._get_fallback_results(query)
+            return []
 
     def _is_relevant_result(self, url: str, title: str, snippet: str) -> bool:
         """Check if a search result is relevant."""
@@ -184,63 +183,6 @@ class BrowserTool:
             return True
 
         return False
-
-    def _get_fallback_results(self, query: str) -> List[Dict[str, str]]:
-        """Get fallback search results for real libraries."""
-        # Use real libraries as fallbacks based on the search category
-        if "python" in query.lower():
-            return [
-                {
-                    "title": "FastAPI - High performance Python web framework",
-                    "url": "https://fastapi.tiangolo.com/",
-                    "snippet": "FastAPI is a modern, fast (high-performance), web framework for building APIs with Python 3.7+ based on standard Python type hints."
-                },
-                {
-                    "title": "Pydantic - Data validation using Python type annotations",
-                    "url": "https://docs.pydantic.dev/",
-                    "snippet": "Pydantic is a data validation library for Python that uses Python type annotations to validate data and enforce type hints at runtime."
-                }
-            ]
-        elif "javascript" in query.lower() or "web" in query.lower():
-            return [
-                {
-                    "title": "Svelte • Cybernetically enhanced web apps",
-                    "url": "https://svelte.dev/",
-                    "snippet": "Svelte is a radical new approach to building user interfaces. Whereas traditional frameworks like React and Vue do the bulk of their work in the browser, Svelte shifts that work into a compile step."
-                },
-                {
-                    "title": "Axios - Promise based HTTP client for the browser and node.js",
-                    "url": "https://axios-http.com/",
-                    "snippet": "Axios is a simple promise based HTTP client for the browser and node.js. Axios provides a simple to use library in a small package with a very extensible interface."
-                }
-            ]
-        elif "data" in query.lower() or "analysis" in query.lower():
-            return [
-                {
-                    "title": "pandas - Python Data Analysis Library",
-                    "url": "https://pandas.pydata.org/",
-                    "snippet": "pandas is a fast, powerful, flexible and easy to use open source data analysis and manipulation tool, built on top of the Python programming language."
-                },
-                {
-                    "title": "Deno - A modern runtime for JavaScript and TypeScript",
-                    "url": "https://deno.land/",
-                    "snippet": "Deno is a simple, modern and secure runtime for JavaScript and TypeScript that uses V8 and is built in Rust."
-                }
-            ]
-        else:
-            # General fallbacks covering various categories
-            return [
-                {
-                    "title": "htmx - high power tools for HTML",
-                    "url": "https://htmx.org/",
-                    "snippet": "htmx gives you access to AJAX, CSS Transitions, WebSockets and Server Sent Events directly in HTML, using attributes, so you can build modern user interfaces with the simplicity and power of hypertext."
-                },
-                {
-                    "title": "Lodash - A modern JavaScript utility library",
-                    "url": "https://lodash.com/",
-                    "snippet": "Lodash makes JavaScript easier by taking the hassle out of working with arrays, numbers, objects, strings, etc."
-                }
-            ]
 
     def browse(self, url: str) -> Optional[str]:
         """
@@ -282,6 +224,15 @@ class BrowserTool:
         self.logger.info(f"Extracting resource info from {url}")
 
         try:
+            # For GitHub repositories, use a specialized extraction method
+            if "github.com" in url:
+                return self._extract_github_repo_info(url, category)
+
+            # For PyPI packages, use specialized extraction
+            if "pypi.org" in url:
+                return self._extract_pypi_package_info(url, category)
+
+            # General extraction for other URLs
             content = self.browse(url)
             if not content:
                 return None
@@ -348,12 +299,199 @@ class BrowserTool:
             self.logger.error(f"Error extracting resource info from {url}: {str(e)}")
             return None
 
+    def _extract_github_repo_info(self, url: str, category: str) -> Optional[Dict[str, str]]:
+        """Extract information from a GitHub repository."""
+        try:
+            content = self.browse(url)
+            if not content:
+                return None
+
+            soup = BeautifulSoup(content, "html.parser")
+
+            # Get the repo name
+            title_elem = soup.select_one("h1 strong a") or soup.select_one("h1.d-inline a")
+            if not title_elem:
+                # Try alternative selectors
+                title_elem = soup.select_one("h1") or soup.select_one("title")
+
+            title = title_elem.get_text().strip() if title_elem else None
+
+            # If we couldn't find the title, extract from URL
+            if not title:
+                path_parts = urllib.parse.urlparse(url).path.strip("/").split("/")
+                if len(path_parts) >= 2:
+                    title = path_parts[1].replace("-", " ").replace("_", " ").title()
+
+            # Get the description
+            desc_elem = soup.select_one(".f4.my-3") or soup.select_one(".repository-content .f4") or soup.select_one("p.f4")
+            description = None
+            if desc_elem:
+                description = desc_elem.get_text().strip()
+
+            # If no description found, check for og:description
+            if not description:
+                og_desc = soup.select_one("meta[property='og:description']")
+                if og_desc and "content" in og_desc.attrs:
+                    description = og_desc["content"]
+
+            # Fallback
+            if not description:
+                readme_elem = soup.select_one("#readme")
+                if readme_elem:
+                    first_p = readme_elem.select_one("p")
+                    if first_p:
+                        description = first_p.get_text().strip()
+
+            # Final fallback description
+            if not description:
+                description = f"A {category} library or tool"
+
+            # Clean and truncate description
+            if description:
+                # Remove extra whitespace
+                description = re.sub(r'\s+', ' ', description).strip()
+                # Truncate to 100 chars as per Awesome list spec
+                if len(description) > 100:
+                    description = description[:97] + "..."
+
+            return {
+                "title": title,
+                "url": url,
+                "description": description
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error extracting GitHub repo info from {url}: {str(e)}")
+            return None
+
+    def _extract_pypi_package_info(self, url: str, category: str) -> Optional[Dict[str, str]]:
+        """Extract information from a PyPI package page."""
+        try:
+            content = self.browse(url)
+            if not content:
+                return None
+
+            soup = BeautifulSoup(content, "html.parser")
+
+            # Get package name
+            title_elem = soup.select_one("h1.package-header__name")
+            title = title_elem.get_text().strip() if title_elem else None
+
+            # If we couldn't find the title, extract from URL
+            if not title:
+                path_parts = urllib.parse.urlparse(url).path.strip("/").split("/")
+                if path_parts:
+                    title = path_parts[-1].replace("-", " ").replace("_", " ").title()
+
+            # Get the description
+            desc_elem = soup.select_one(".package-description__summary")
+            description = None
+            if desc_elem:
+                description = desc_elem.get_text().strip()
+
+            # If no description found, try other elements
+            if not description:
+                project_description = soup.select_one("#description")
+                if project_description:
+                    first_p = project_description.select_one("p")
+                    if first_p:
+                        description = first_p.get_text().strip()
+
+            # Fallback description
+            if not description:
+                description = f"A {category} Python package"
+
+            # Clean and truncate description
+            if description:
+                # Remove extra whitespace
+                description = re.sub(r'\s+', ' ', description).strip()
+                # Truncate to 100 chars as per Awesome list spec
+                if len(description) > 100:
+                    description = description[:97] + "..."
+
+            return {
+                "title": title,
+                "url": url,
+                "description": description
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error extracting PyPI package info from {url}: {str(e)}")
+            return None
+
+    def _filter_relevant_results(self, search_results: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Filter search results by relevance.
+
+        Args:
+            search_results: List of search results
+
+        Returns:
+            Filtered list of search results
+        """
+        # No need to add fake results - if we don't find anything, that's valuable feedback
+        if not search_results:
+            return []
+
+        # Filter by relevance to the category and focus on GitHub repos
+        relevant_results = []
+
+        for result in search_results:
+            relevance_score = 0
+            url = result.get("url", "")
+
+            # Strong preference for GitHub/GitLab/PyPI results
+            if "github.com" in url:
+                relevance_score += 5
+            elif "gitlab.com" in url:
+                relevance_score += 4
+            elif "pypi.org" in url:
+                relevance_score += 4
+            elif "readthedocs.io" in url or "docs.rs" in url:
+                relevance_score += 3
+
+            # Check for code snippets or documentation sites
+            if ".io" in url or ".dev" in url:
+                relevance_score += 1
+
+            # Avoid general review sites and non-relevant domains
+            if any(domain in url for domain in [
+                "google.com", "youtube.com", "wikipedia.org",
+                "facebook.com", "twitter.com", "instagram.com",
+                "reddit.com", "medium.com", "stackoverflow.com",
+                "quora.com", "pinterest.com"
+            ]):
+                relevance_score -= 3
+
+            # Check title for keywords suggesting it's a library
+            title = result.get("title", "").lower()
+            if any(term in title for term in [
+                "library", "framework", "package", "module", "toolkit",
+                "api", "sdk", "tool", "utility", "plugin", "extension",
+                "github", "gitlab", "repo", "python"
+            ]):
+                relevance_score += 2
+
+            # Check snippet for keywords
+            snippet = result.get("snippet", "").lower()
+            if any(term in snippet for term in [
+                "library", "framework", "package", "module", "install",
+                "pip", "import", "from", "github", "open source", "documentation"
+            ]):
+                relevance_score += 2
+
+            # Relevant enough to include?
+            if relevance_score >= 3:
+                relevant_results.append(result)
+
+        return relevant_results
+
 
 class CategoryResearchAgent:
     """
     Agent for researching new resources for a category.
     Uses BrowserTool to perform real web searches.
-    """
+"""
 
     def __init__(
         self,
@@ -430,7 +568,7 @@ class CategoryResearchAgent:
             search_results = self.browser_tool.search(query_with_category)
 
             # Filter results to filter out potentially irrelevant ones
-            relevant_results = self._filter_relevant_results(search_results)
+            relevant_results = self.browser_tool._filter_relevant_results(search_results)
 
             # Extract resource information
             candidates = []
@@ -511,46 +649,3 @@ class CategoryResearchAgent:
             return False
 
         return True
-
-    def _filter_relevant_results(self, search_results: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """
-        Filter search results by relevance.
-
-        Args:
-            search_results: List of search results
-
-        Returns:
-            Filtered list of search results
-        """
-        # No need to add fake results - if we don't find anything, that's valuable feedback
-        if not search_results:
-            return []
-
-        # Filter by relevance to the category
-        relevant_results = []
-
-        for result in search_results:
-            relevance_score = 0
-
-            # Check title for category or related terms
-            if self.category.lower() in result["title"].lower():
-                relevance_score += 3
-
-            # Check snippet for category or related terms
-            if self.category.lower() in result["snippet"].lower():
-                relevance_score += 2
-
-            # Check for GitHub repositories (often high-quality resources)
-            if "github.com" in result["url"].lower():
-                relevance_score += 2
-
-            # Check for documentation, tools, libraries
-            if any(term in result["title"].lower() or term in result["snippet"].lower()
-                  for term in ["library", "framework", "tool", "package", "documentation"]):
-                relevance_score += 1
-
-            # Include if relevant enough
-            if relevance_score >= 2:
-                relevant_results.append(result)
-
-        return relevant_results

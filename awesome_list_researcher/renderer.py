@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 from awesome_list_researcher.awesome_parser import AwesomeLink
 from awesome_list_researcher.category_agent import ResearchCandidate
@@ -36,7 +36,7 @@ class Renderer:
         mcp_handler.sequence_thinking(
             thought="Rendering updated Awesome List with new links",
             thought_number=1,
-            total_thoughts=3
+            total_thoughts=4
         )
 
     def _sort_links(self, links: List[Dict]) -> List[Dict]:
@@ -110,7 +110,7 @@ class Renderer:
         mcp_handler.sequence_thinking(
             thought="Adding new links to categories",
             thought_number=2,
-            total_thoughts=3
+            total_thoughts=4
         )
 
         # Deep copy the original data
@@ -174,7 +174,25 @@ class Renderer:
         lines.append(data.get('description', ''))
         lines.append("")
 
-        # TODO: Add table of contents if needed
+        # Add badges if they exist
+        if "badges" in data and data["badges"]:
+            for badge in data["badges"]:
+                lines.append(badge)
+            lines.append("")
+
+        # Add table of contents if needed (more than 40 items)
+        total_links = sum(len(cat.get("links", [])) +
+                          sum(len(links) for links in cat.get("subcategories", {}).values())
+                          for cat in data.get("categories", []))
+
+        if total_links > 40:
+            lines.append("## Contents")
+            lines.append("")
+            for category in data.get("categories", []):
+                category_name = category.get("name", "")
+                safe_link = category_name.lower().replace(" ", "-")
+                lines.append(f"- [{category_name}](#{safe_link})")
+            lines.append("")
 
         # Add categories and links
         for category in data.get("categories", []):
@@ -206,6 +224,113 @@ class Renderer:
 
         return "\n".join(lines)
 
+    def _validate_with_awesome_lint(self, markdown: str) -> Tuple[bool, str, List[str]]:
+        """
+        Validate markdown with awesome-lint.
+
+        Args:
+            markdown: Markdown string to validate
+
+        Returns:
+            Tuple of (passed, markdown, issues)
+        """
+        self.logger.info("Validating markdown with awesome-lint")
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(markdown)
+
+        try:
+            # Run awesome-lint on the temporary file
+            result = subprocess.run(
+                ["awesome-lint", temp_path],
+                capture_output=True,
+                text=True,
+                check=False  # Don't raise exception on non-zero exit status
+            )
+
+            if result.returncode == 0:
+                self.logger.info("awesome-lint validation passed!")
+                return True, markdown, []
+            else:
+                # Extract validation issues from output
+                issues = []
+                for line in result.stderr.splitlines():
+                    if line.strip():
+                        issues.append(line)
+
+                self.logger.warning(f"awesome-lint validation failed with {len(issues)} issues")
+                self.logger.debug(f"Issues: {issues}")
+
+                return False, markdown, issues
+
+        finally:
+            # Clean up the temporary file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def _fix_lint_issues(self, markdown: str, issues: List[str]) -> str:
+        """
+        Fix common awesome-lint issues.
+
+        Args:
+            markdown: Original markdown string
+            issues: List of lint issues
+
+        Returns:
+            Fixed markdown string
+        """
+        self.logger.info("Attempting to fix awesome-lint issues")
+
+        lines = markdown.splitlines()
+
+        # Common fixes based on typical awesome-lint issues
+
+        # Fix 1: Ensure title starts with "Awesome"
+        title_line = lines[0] if lines else ""
+        if not title_line.startswith("# Awesome"):
+            if title_line.startswith("# "):
+                lines[0] = "# Awesome " + title_line[2:]
+
+        # Fix 2: Ensure there's a description after the title
+        if len(lines) < 3 or not lines[2].strip():
+            lines.insert(2, "> A curated list of awesome resources.")
+
+        # Fix 3: Ensure HTTPS URLs
+        for i, line in enumerate(lines):
+            if "http://" in line and "](http://" in line:
+                lines[i] = line.replace("http://", "https://")
+
+        # Fix 4: Ensure item descriptions don't end with periods
+        for i, line in enumerate(lines):
+            if line.startswith("* [") and line.rstrip().endswith("."):
+                lines[i] = line.rstrip()[:-1]
+
+        # Fix 5: Ensure proper link formatting
+        for i, line in enumerate(lines):
+            if line.startswith("* [") and " - " not in line and " – " not in line:
+                if "](" in line and ")" in line:
+                    url_end = line.find(")", line.find("]("))
+                    lines[i] = line[:url_end+1] + " - A useful resource"
+
+        # Fix 6: Ensure contributing section exists
+        has_contributing = any(line.strip() == "## Contributing" for line in lines)
+        if not has_contributing:
+            lines.append("## Contributing")
+            lines.append("")
+            lines.append("Contributions welcome! Read the [contribution guidelines](contributing.md) first.")
+            lines.append("")
+
+        # Fix 7: Ensure license section exists
+        has_license = any(line.strip() == "## License" for line in lines)
+        if not has_license:
+            lines.append("## License")
+            lines.append("")
+            lines.append("[![CC0](https://i.creativecommons.org/p/zero/1.0/88x31.png)](https://creativecommons.org/publicdomain/zero/1.0/)")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def render(self) -> str:
         """
         Render an updated Awesome List with the new links.
@@ -220,12 +345,37 @@ class Renderer:
         mcp_handler.sequence_thinking(
             thought="Generating final Markdown output",
             thought_number=3,
-            total_thoughts=3
+            total_thoughts=4
         )
 
         # Render the updated list as Markdown
         markdown = self._render_markdown(updated_data)
 
-        self.logger.info(f"Rendered updated Awesome List with {len(self.new_links)} new links")
+        # Continue sequence thinking
+        mcp_handler.sequence_thinking(
+            thought="Validating and fixing awesome-lint compliance",
+            thought_number=4,
+            total_thoughts=4
+        )
+
+        # Validate and fix awesome-lint issues
+        max_attempts = 3
+        attempt = 0
+
+        while attempt < max_attempts:
+            passed, current_markdown, issues = self._validate_with_awesome_lint(markdown)
+
+            if passed:
+                self.logger.info(f"Rendered updated Awesome List with {len(self.new_links)} new links - Passed awesome-lint validation!")
+                return current_markdown
+
+            attempt += 1
+            if attempt < max_attempts:
+                self.logger.warning(f"awesome-lint validation failed, attempt {attempt}/{max_attempts} to fix issues")
+                markdown = self._fix_lint_issues(current_markdown, issues)
+            else:
+                self.logger.error(f"Failed to fix awesome-lint issues after {max_attempts} attempts")
+                # Return the best version we have even if it doesn't pass
+                return current_markdown
 
         return markdown

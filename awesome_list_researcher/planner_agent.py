@@ -68,7 +68,7 @@ class PlannerAgent:
     Agent for planning research queries.
 
     This implementation uses MCP tools to maintain chain-of-thought reasoning.
-    """
+"""
 
     def __init__(
         self,
