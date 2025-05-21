@@ -326,21 +326,21 @@ class AwesomeListResearcher:
 
             # 5. Filter duplicates
             duplicate_filter = DuplicateFilter(aggregated_results, original_data)
-            filtered_results = duplicate_filter.filter()
+            new_links = duplicate_filter.filter_duplicates()
 
             # Check duplicate ratio
             dupe_ratio = duplicate_filter.get_duplicate_ratio()
             context_store.set("stats", {
                 "total_candidates": len(aggregated_results),
-                "duplicates_found": len(aggregated_results) - len(filtered_results),
+                "duplicates_found": len(aggregated_results) - len(new_links),
                 "duplicate_ratio": f"{dupe_ratio:.2f}%",
-                "new_links_found": len(filtered_results)
+                "new_links_found": len(new_links)
             })
 
             # Save new links
             new_links_path = os.path.join(self.output_dir, "new_links.json")
             with open(new_links_path, "w") as f:
-                json.dump(filtered_results, f, indent=2)
+                json.dump(new_links, f, indent=2)
             logger.info(f"New links saved to {new_links_path}")
 
             # Continue sequence thinking
@@ -351,7 +351,7 @@ class AwesomeListResearcher:
             )
 
             # 6. Validate new links
-            validator = Validator(filtered_results)
+            validator = Validator(new_links)
 
             # Check cost ceiling
             estimated_cost = validator.estimate_cost()
