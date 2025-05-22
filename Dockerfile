@@ -20,6 +20,9 @@ RUN pip install poetry
 # Set up working directory
 WORKDIR /app
 
+# Configure Git to trust the /app directory
+RUN git config --global --add safe.directory /app
+
 # Copy .env file if it exists
 COPY [".env", ".env"]
 
@@ -31,6 +34,9 @@ RUN poetry config virtualenvs.create false
 
 # Install dependencies
 RUN poetry install --no-interaction --no-ansi
+
+# Drop capabilities for security
+USER 1000:1000
 
 # Entrypoint
 ENTRYPOINT ["./build-and-run.sh"]

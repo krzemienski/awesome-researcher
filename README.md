@@ -157,12 +157,16 @@ The test script runs the tool with a default repository (awesome-python) and ver
 
 Detailed logs are stored in the `agent.log` file within the output directory. The logs include:
 
-- ISO 8601 timestamps
-- Agent name and event type
-- Model used
-- Token counts
-- Cost in USD
-- Full prompts and completions
+- ISO 8601 timestamps and phase tracking
+- Prompt and completion excerpts (first 200 chars)
+- Token counts, latency (ms), and incremental cost
+- Category context (category, query_idx, retry_idx)
+- Validation flags (schema_valid, markdown_lint_pass, url_valid)
+
+Example log entry:
+```json
+{"phase": "query", "category": "Codecs", "term_idx": 0, "retry_idx": 0, "query": "video compression formats", "prompt_excerpt": "You are a research assistant specializing in finding high-quality resources related to Codecs", "completion_excerpt": "Here are some high-quality resources related to video compression formats:", "latency_ms": 4263, "tokens": 1423, "cost_usd": 0.0284}
+```
 
 ## License
 

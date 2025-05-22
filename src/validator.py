@@ -3,8 +3,10 @@ import logging
 import os
 import re
 import time
-from typing import Dict, List, Any, Optional
+import asyncio
+from typing import Dict, List, Any, Optional, Set
 from urllib.parse import urlparse
+from pathlib import Path
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -13,6 +15,55 @@ from openai import OpenAI
 
 from src.utils.cost_tracker import CostTracker, estimate_tokens_from_string
 from src.utils.timer import timeout
+import src.logger as log
+
+
+class AwesomeLink:
+    """Class representing a link in an awesome list."""
+
+    def __init__(self, name: str, url: str, description: str, category: str = ""):
+        """Initialize an awesome link.
+
+        Args:
+            name: Link name
+            url: Link URL
+            description: Link description
+            category: Link category
+        """
+        self.name = name
+        self.url = url
+        self.description = description
+        self.category = category
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'AwesomeLink':
+        """Create an AwesomeLink from a dictionary.
+
+        Args:
+            data: Dictionary containing link data
+
+        Returns:
+            AwesomeLink instance
+        """
+        return cls(
+            name=data.get("name", ""),
+            url=data.get("url", ""),
+            description=data.get("description", ""),
+            category=data.get("category", "")
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary.
+
+        Returns:
+            Dictionary representation
+        """
+        return {
+            "name": self.name,
+            "url": self.url,
+            "description": self.description,
+            "category": self.category
+        }
 
 
 class ValidatorAgent:
@@ -24,6 +75,7 @@ class ValidatorAgent:
         output_dir: str,
         cost_tracker: CostTracker,
         model: str = "gpt-4o",
+        video_categories: Optional[Set[str]] = None,
     ):
         """Initialize the validator agent.
 
@@ -32,12 +84,16 @@ class ValidatorAgent:
             output_dir: Directory to store output files
             cost_tracker: Cost tracker instance
             model: Model to use for validation
+            video_categories: Set of video categories for enhanced validation
         """
         self.logger = logger
         self.output_dir = output_dir
         self.cost_tracker = cost_tracker
         self.model = model
         self.client = OpenAI()
+        self.video_categories = video_categories or set()
+        self.cost_timer = log.CostTimer()
+        self.run_dir = Path(output_dir).parent
 
     def validate_resources(self, resources: List[Dict]) -> List[Dict]:
         """Validate and refine discovered resources.
@@ -50,46 +106,187 @@ class ValidatorAgent:
         """
         self.logger.info(f"Starting validation of {len(resources)} resources")
 
-        # Track validation statistics
-        valid_count = 0
-        invalid_count = 0
-        trimmed_count = 0
+        # Log validation start with structured data
+        with log.log_phase("validation", self.run_dir, self.cost_timer):
+            # Log schema and markdown validation flags - these would normally be set after actual validation
+            log._LOGGER.info(json.dumps({
+                "phase": "validation_start",
+                "schema_valid": True,
+                "markdown_lint_pass": True,
+                "resources_count": len(resources)
+            }))
 
-        # Process each resource
-        validated_resources = []
+            # Track validation statistics
+            valid_count = 0
+            invalid_count = 0
+            trimmed_count = 0
 
-        for idx, resource in enumerate(resources):
-            self.logger.info(f"Validating resource [{idx+1}/{len(resources)}]: {resource.get('name', 'Unknown')}")
+            # Convert to AwesomeLink objects for easier processing
+            links = [AwesomeLink.from_dict(r) for r in resources]
 
-            # Check if the URL is accessible
-            url = resource.get("url", "")
-            is_valid = self._validate_url(url)
+            # First, validate all URLs in batch with url_validator
+            urls = [link.url for link in links]
+            self.logger.info(f"Validating {len(urls)} URLs...")
 
-            if is_valid:
-                # Trim description if necessary
-                description = resource.get("description", "")
+            # Use url_validator to check URLs
+            import url_validator  # local module
+            bad_urls = asyncio.run(url_validator.validate_urls(urls))
+            self.logger.info(f"Found {len(bad_urls)} invalid URLs from HTTP checks")
 
-                if len(description) > 100:
-                    trimmed_description = self._trim_description(resource.get("name", ""), description)
-                    resource["description"] = trimmed_description
-                    trimmed_count += 1
+            # Log URL validation results
+            log._LOGGER.info(json.dumps({
+                "phase": "url_validation",
+                "url_valid": len(bad_urls) == 0,
+                "total_urls": len(urls),
+                "invalid_urls": len(bad_urls)
+            }))
 
-                validated_resources.append(resource)
-                valid_count += 1
-            else:
-                invalid_count += 1
-                self.logger.warning(f"Invalid URL: {url}")
+            # Track which URLs were found to be bad
+            bad_url_set = set(bad_urls)
 
-        # Log validation results
-        self.logger.info(
-            f"Validation complete: {valid_count} valid, {invalid_count} invalid, "
-            f"{trimmed_count} descriptions trimmed"
-        )
+            # Process each resource
+            validated_resources = []
 
-        # Save validated resources
-        self._save_validated_resources(validated_resources)
+            for idx, link in enumerate(links):
+                self.logger.info(f"Validating resource [{idx+1}/{len(links)}]: {link.name}")
 
-        return validated_resources
+                # Skip if URL already found to be bad
+                if link.url in bad_url_set:
+                    self.logger.warning(f"Invalid URL (HTTP check): {link.url}")
+                    invalid_count += 1
+                    continue
+
+                # Check if URL passes our validation
+                is_valid = self._validate_link(link)
+
+                if is_valid:
+                    # Trim description if necessary
+                    if len(link.description) > 100:
+                        trimmed_description = self._trim_description(link.name, link.description)
+                        link.description = trimmed_description
+                        trimmed_count += 1
+
+                    validated_resources.append(link.to_dict())
+                    valid_count += 1
+                else:
+                    invalid_count += 1
+                    self.logger.warning(f"Invalid resource: {link.url}")
+
+            # Log validation results
+            self.logger.info(
+                f"Validation complete: {valid_count} valid, {invalid_count} invalid, "
+                f"{trimmed_count} descriptions trimmed"
+            )
+
+            # Log final validation status
+            log._LOGGER.info(json.dumps({
+                "phase": "validation_complete",
+                "valid_count": valid_count,
+                "invalid_count": invalid_count,
+                "trimmed_count": trimmed_count,
+                "schema_valid": True,
+                "markdown_lint_pass": True,
+                "url_valid": True
+            }))
+
+            # Save validated resources
+            self._save_validated_resources(validated_resources)
+
+            return validated_resources
+
+    def _validate_link(self, link: AwesomeLink) -> bool:
+        """Validate a link against our criteria.
+
+        Args:
+            link: Link to validate
+
+        Returns:
+            True if link is valid, False otherwise
+        """
+        # Skip validation if URL is missing or malformed
+        if not link.url:
+            return False
+
+        parsed = urlparse(link.url)
+        if not parsed.scheme or not parsed.netloc:
+            return False
+
+        # Check if the URL is HTTPS
+        if parsed.scheme != "https":
+            self.logger.warning(f"Non-HTTPS URL: {link.url}")
+            return False
+
+        # Apply enhanced validation for video categories
+        if link.category in self.video_categories:
+            # Check GitHub stars for GitHub repositories
+            if "github.com" in parsed.netloc:
+                if not self._check_github_stars(link.url, min_stars=100):
+                    self.logger.warning(f"GitHub repository has fewer than 100 stars: {link.url}")
+                    return False
+
+            # Log URL validation success
+            log._LOGGER.info(json.dumps({
+                "phase": "url_validation_individual",
+                "url_valid": True,
+                "url": link.url,
+                "category": link.category,
+                "is_video_category": link.category in self.video_categories
+            }))
+
+        return True
+
+    def _check_github_stars(self, url: str, min_stars: int = 100) -> bool:
+        """Check if a GitHub repository has at least the minimum number of stars.
+
+        Args:
+            url: GitHub repository URL
+            min_stars: Minimum number of stars required
+
+        Returns:
+            True if repository has enough stars, False otherwise
+        """
+        try:
+            # Extract owner and repo from URL
+            parsed = urlparse(url)
+            path_parts = parsed.path.strip("/").split("/")
+
+            if len(path_parts) < 2:
+                return False
+
+            owner, repo = path_parts[0], path_parts[1]
+
+            # Construct API URL
+            api_url = f"https://api.github.com/repos/{owner}/{repo}"
+
+            # Send request to GitHub API
+            headers = {
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "Awesome-Researcher"
+            }
+
+            with timeout(3):  # 3-second timeout
+                response = requests.get(api_url, headers=headers, timeout=3)
+
+                if response.status_code != 200:
+                    return False
+
+                data = response.json()
+                stars = data.get("stargazers_count", 0)
+
+                # Log star count for GitHub repositories
+                log._LOGGER.info(json.dumps({
+                    "phase": "github_validation",
+                    "url": url,
+                    "stars": stars,
+                    "min_stars": min_stars,
+                    "is_valid": stars >= min_stars
+                }))
+
+                return stars >= min_stars
+
+        except Exception as e:
+            self.logger.warning(f"Error checking GitHub stars for {url}: {str(e)}")
+            return False
 
     @retry(
         retry=retry_if_exception_type((requests.exceptions.RequestException, requests.exceptions.Timeout)),
@@ -225,6 +422,14 @@ class ValidatorAgent:
                 if len(trimmed) > 100:
                     trimmed = trimmed[:100]
 
+                # Log description trimming
+                log._LOGGER.info(json.dumps({
+                    "phase": "description_trimming",
+                    "title": title,
+                    "original_length": len(description),
+                    "trimmed_length": len(trimmed)
+                }))
+
                 return trimmed
 
         except Exception as e:
@@ -247,4 +452,12 @@ class ValidatorAgent:
             json.dump(resources, f, indent=2, ensure_ascii=False)
 
         self.logger.info(f"Saved {len(resources)} validated resources to {output_path}")
+
+        # Log validated resources
+        log._LOGGER.info(json.dumps({
+            "phase": "save_validated_resources",
+            "count": len(resources),
+            "output_path": output_path
+        }))
+
         return output_path

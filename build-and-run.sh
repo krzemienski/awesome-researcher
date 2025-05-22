@@ -23,6 +23,11 @@ SEED=""
 MODEL_PLANNER="gpt-4.1"
 MODEL_RESEARCHER="gpt-4o"
 MODEL_VALIDATOR="gpt-4o"
+CONTENTS_FILE=""
+MIN_RESULTS=10
+GLOBAL_TIMEOUT=""
+GEN_AWESOME_LIST=false
+UPDATE=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -32,7 +37,7 @@ while [[ $# -gt 0 ]]; do
             REPO_URL="$2"
             shift 2
             ;;
-        --wall_time)
+        --wall_time | --time-limit)
             WALL_TIME="$2"
             shift 2
             ;;
@@ -60,6 +65,26 @@ while [[ $# -gt 0 ]]; do
             MODEL_VALIDATOR="$2"
             shift 2
             ;;
+        --contents)
+            CONTENTS_FILE="$2"
+            shift 2
+            ;;
+        --min-results)
+            MIN_RESULTS="$2"
+            shift 2
+            ;;
+        --global-timeout)
+            GLOBAL_TIMEOUT="$2"
+            shift 2
+            ;;
+        --gen-awesome-list)
+            GEN_AWESOME_LIST=true
+            shift
+            ;;
+        --update)
+            UPDATE=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
             exit 1
@@ -70,7 +95,7 @@ done
 # Validate required arguments
 if [ -z "$REPO_URL" ]; then
     echo "Error: --repo_url is required"
-    echo "Usage: ./build-and-run.sh --repo_url <url> [--wall_time <seconds>] [--cost_ceiling <usd>] [--output_dir <dir>] [--seed <int>] [--model_planner <model>] [--model_researcher <model>] [--model_validator <model>]"
+    echo "Usage: ./build-and-run.sh --repo_url <url> [--wall_time <seconds>] [--cost_ceiling <usd>] [--output_dir <dir>] [--seed <int>] [--model_planner <model>] [--model_researcher <model>] [--model_validator <model>] [--contents <file>] [--min-results <int>] [--global-timeout <seconds>] [--gen-awesome-list] [--update]"
     exit 1
 fi
 
@@ -88,10 +113,20 @@ if [ "$INSIDE_DOCKER" = false ]; then
 
     # Run Docker container with arguments explicitly passed
     echo "Running inside Docker container..."
-    docker run --rm -it \
-        -e OPENAI_API_KEY="$OPENAI_API_KEY" \
-        -v "$(pwd)/${OUTPUT_DIR}:/app/${OUTPUT_DIR}" \
-        awesome-researcher \
+    docker_args=(
+        --rm -it
+        -e OPENAI_API_KEY="$OPENAI_API_KEY"
+        -v "$(pwd)/${OUTPUT_DIR}:/app/${OUTPUT_DIR}"
+    )
+
+    # If contents file specified, add volume mount
+    if [ -n "$CONTENTS_FILE" ]; then
+        # Get the directory containing the contents file
+        contents_dir=$(dirname "$CONTENTS_FILE")
+        docker_args+=(-v "$(pwd)/${contents_dir}:/app/${contents_dir}")
+    fi
+
+    docker run "${docker_args[@]}" awesome-researcher \
         --repo_url "$REPO_URL" \
         --wall_time "$WALL_TIME" \
         --cost_ceiling "$COST_CEILING" \
@@ -99,7 +134,12 @@ if [ "$INSIDE_DOCKER" = false ]; then
         --model_planner "$MODEL_PLANNER" \
         --model_researcher "$MODEL_RESEARCHER" \
         --model_validator "$MODEL_VALIDATOR" \
-        $([ -n "$SEED" ] && echo "--seed $SEED")
+        $([ -n "$SEED" ] && echo "--seed $SEED") \
+        $([ -n "$CONTENTS_FILE" ] && echo "--contents $CONTENTS_FILE") \
+        $([ -n "$MIN_RESULTS" ] && echo "--min-results $MIN_RESULTS") \
+        $([ -n "$GLOBAL_TIMEOUT" ] && echo "--global-timeout $GLOBAL_TIMEOUT") \
+        $([ "$GEN_AWESOME_LIST" = true ] && echo "--gen-awesome-list") \
+        $([ "$UPDATE" = true ] && echo "--update")
     exit 0
 fi
 
@@ -115,16 +155,50 @@ fi
 echo "Model (planner): $MODEL_PLANNER"
 echo "Model (researcher): $MODEL_RESEARCHER"
 echo "Model (validator): $MODEL_VALIDATOR"
+if [ -n "$CONTENTS_FILE" ]; then
+    echo "Content taxonomy file: $CONTENTS_FILE"
+fi
 
 # Create timestamp for this run
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 RUN_DIR="${OUTPUT_DIR}/${TIMESTAMP}"
 mkdir -p "$RUN_DIR"
 
+# Create branch & commit utilities - with graceful fallback
+BRANCH_NAME="feature/run-${TIMESTAMP}"
+if command -v git &> /dev/null; then
+    # Try to create a branch
+    if git branch -C "$(pwd)" "$BRANCH_NAME" 2>/dev/null; then
+        echo ":: Created branch $BRANCH_NAME"
+    else
+        echo ":: Warning: Could not create Git branch, continuing without Git operations"
+    fi
+else
+    echo ":: Git not available, continuing without Git operations"
+fi
+
+# Save branch name to run directory for tracking
+echo "$BRANCH_NAME" > "${RUN_DIR}/git_branch.txt"
+
 # Prepare arguments for Python script
 PYTHON_ARGS=""
 if [ -n "$SEED" ]; then
     PYTHON_ARGS="$PYTHON_ARGS --seed $SEED"
+fi
+if [ -n "$CONTENTS_FILE" ]; then
+    PYTHON_ARGS="$PYTHON_ARGS --contents $CONTENTS_FILE"
+fi
+if [ -n "$MIN_RESULTS" ]; then
+    PYTHON_ARGS="$PYTHON_ARGS --min-results $MIN_RESULTS"
+fi
+if [ -n "$GLOBAL_TIMEOUT" ]; then
+    PYTHON_ARGS="$PYTHON_ARGS --global-timeout $GLOBAL_TIMEOUT"
+fi
+if [ "$GEN_AWESOME_LIST" = true ]; then
+    PYTHON_ARGS="$PYTHON_ARGS --gen-awesome-list"
+fi
+if [ "$UPDATE" = true ]; then
+    PYTHON_ARGS="$PYTHON_ARGS --update"
 fi
 
 # Run the main Python script
@@ -137,5 +211,24 @@ python -m src.main \
     --model_researcher "$MODEL_RESEARCHER" \
     --model_validator "$MODEL_VALIDATOR" \
     $PYTHON_ARGS
+
+# Commit all changes with graceful fallback
+if command -v git &> /dev/null; then
+    # Try to commit changes
+    run_id=$(basename "$RUN_DIR")
+    commit_msg="run ${run_id}: auto-generated research update"
+
+    if git add . 2>/dev/null && git commit -m "$commit_msg" 2>/dev/null; then
+        SHA=$(git rev-parse HEAD 2>/dev/null)
+        echo ":: Committed changes with message: '${commit_msg}'"
+        echo ":: Commit SHA: ${SHA}"
+        # Save commit SHA to run directory for tracking
+        echo "$SHA" > "${RUN_DIR}/git_commit.txt"
+    else
+        echo ":: Warning: Could not commit changes, but research was completed"
+    fi
+else
+    echo ":: Git not available, research completed without Git commit"
+fi
 
 echo "Run completed. Results are available in $RUN_DIR"

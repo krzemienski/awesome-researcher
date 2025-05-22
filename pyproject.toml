@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "awesome-researcher"
-version = "0.1.0"
+version = "1.3.2"
 description = "A tool to research and expand awesome lists using OpenAI's agent system"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
@@ -19,6 +19,10 @@ pybloom-live = "^4.0.0"
 markdown = "^3.5.2"
 pyyaml = "^6.0.1"
 tenacity = "^8.2.3"
+jsonschema = "^4.21.1"
+httpx = "^0.27.0"
+asyncio = "^3.4.3"
+tqdm = "^4.65.0"
 
 [build-system]
 requires = ["poetry-core"]

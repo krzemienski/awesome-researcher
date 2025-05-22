@@ -2,12 +2,15 @@ import json
 import logging
 import os
 import random
-from typing import Dict, List, Set, Any, Tuple
+from typing import Dict, List, Set, Any, Tuple, Optional
+from pathlib import Path
+import time
 
 from openai import OpenAI
 
 from src.utils.cost_tracker import CostTracker, estimate_tokens_from_string
 from src.utils.timer import timeout
+import src.logger as log
 
 
 class PlannerAgent:
@@ -21,6 +24,7 @@ class PlannerAgent:
         original_data: Dict,
         model: str = "gpt-4.1",
         seed: int = None,
+        taxonomy_file: Optional[str] = None,
     ):
         """Initialize the planner agent.
 
@@ -31,6 +35,7 @@ class PlannerAgent:
             original_data: Original awesome-list data
             model: Model to use for planning
             seed: Random seed for deterministic shuffling
+            taxonomy_file: Path to external taxonomy file (JSON)
         """
         self.logger = logger
         self.output_dir = output_dir
@@ -38,11 +43,51 @@ class PlannerAgent:
         self.original_data = original_data
         self.model = model
         self.client = OpenAI()
+        self.taxonomy_data = None
+        self.category_synonyms = {}
+        self.cost_timer = log.CostTimer()
+        self.run_dir = Path(output_dir).parent
+
+        # Load external taxonomy if provided
+        if taxonomy_file:
+            self._load_taxonomy(taxonomy_file)
 
         # Initialize random seed if provided
         if seed is not None:
             random.seed(seed)
             self.logger.info(f"Using random seed: {seed}")
+
+    def _load_taxonomy(self, taxonomy_file: str) -> None:
+        """Load external taxonomy file.
+
+        Args:
+            taxonomy_file: Path to taxonomy file (JSON)
+        """
+        try:
+            with open(taxonomy_file, 'r', encoding='utf-8') as f:
+                self.taxonomy_data = json.load(f)
+
+            self.logger.info(f"Loaded taxonomy file: {taxonomy_file}")
+
+            # Extract category synonyms
+            if self.taxonomy_data and "categories" in self.taxonomy_data:
+                for category in self.taxonomy_data["categories"]:
+                    name = category.get("name", "")
+                    synonyms = category.get("synonyms", [])
+                    if name and synonyms:
+                        self.category_synonyms[name] = synonyms
+
+                self.logger.info(f"Extracted synonyms for {len(self.category_synonyms)} categories")
+
+                # Log taxonomy information
+                log._LOGGER.info(json.dumps({
+                    "phase": "load_taxonomy",
+                    "taxonomy_file": taxonomy_file,
+                    "categories": list(self.category_synonyms.keys()),
+                    "synonym_count": sum(len(synonyms) for synonyms in self.category_synonyms.values())
+                }))
+        except Exception as e:
+            self.logger.error(f"Error loading taxonomy file: {str(e)}")
 
     def create_research_plan(
         self, expanded_queries: Dict[str, List[str]], queries_per_category: int = 3
@@ -56,43 +101,77 @@ class PlannerAgent:
         Returns:
             Dictionary mapping category names to research plans
         """
-        research_plan = {}
-        all_original_urls = self._extract_all_original_urls()
+        with log.log_phase("planning", self.run_dir, self.cost_timer):
+            research_plan = {}
+            all_original_urls = self._extract_all_original_urls()
 
-        self.logger.info(f"Creating research plans for {len(expanded_queries)} categories")
+            # Get video categories from taxonomy if available
+            video_categories = set(self.category_synonyms.keys())
 
-        for category, terms in expanded_queries.items():
-            self.logger.info(f"Planning research for category: {category}")
+            self.logger.info(f"Creating research plans for {len(expanded_queries)} categories")
+            log._LOGGER.info(json.dumps({
+                "phase": "planning_start",
+                "category_count": len(expanded_queries),
+                "video_categories": list(video_categories) if video_categories else []
+            }))
 
-            # Get category-specific original URLs
-            category_original_urls = self._extract_category_urls(category)
+            for category, terms in expanded_queries.items():
+                self.logger.info(f"Planning research for category: {category}")
 
-            # Create a negative prompt with all original URLs
-            negative_urls_list = "\n".join(all_original_urls)
+                # Get category-specific original URLs
+                category_original_urls = self._extract_category_urls(category)
 
-            # Shuffle and limit terms
-            shuffled_terms = terms.copy()
-            random.shuffle(shuffled_terms)
-            selected_terms = shuffled_terms[:queries_per_category]
+                # Create a negative prompt with all original URLs
+                negative_urls_list = "\n".join(all_original_urls)
 
-            # Create the plan for this category
-            plan = {
-                "category": category,
-                "search_terms": selected_terms,
-                "exclude_urls": all_original_urls,
-                "original_item_count": len(category_original_urls)
-            }
+                # Shuffle and limit terms
+                shuffled_terms = terms.copy()
+                random.shuffle(shuffled_terms)
+                selected_terms = shuffled_terms[:queries_per_category]
 
-            # Add to research plan
-            research_plan[category] = plan
+                # Add synonyms from taxonomy if available
+                if category in self.category_synonyms:
+                    synonyms = self.category_synonyms[category]
+                    self.logger.info(f"Adding {len(synonyms)} synonyms for category '{category}': {synonyms}")
+                    selected_terms.extend(synonyms)
+                    # Ensure we don't exceed the queries_per_category limit
+                    selected_terms = selected_terms[:queries_per_category]
 
-        # Optimize the plan by refining search terms with AI assistance
-        self._refine_search_terms(research_plan)
+                # Create the plan for this category
+                plan = {
+                    "category": category,
+                    "search_terms": selected_terms,
+                    "exclude_urls": all_original_urls,
+                    "original_item_count": len(category_original_urls)
+                }
 
-        # Save the research plan to a file
-        self._save_research_plan(research_plan)
+                # Add synonyms if available
+                if category in self.category_synonyms:
+                    plan["synonyms"] = self.category_synonyms[category]
+                    # Log synonym enrichment
+                    log._LOGGER.info(json.dumps({
+                        "phase": "synonym_enrichment",
+                        "category": category,
+                        "synonyms": self.category_synonyms[category]
+                    }))
 
-        return research_plan
+                # Add to research plan
+                research_plan[category] = plan
+
+            # Optimize the plan by refining search terms with AI assistance
+            self._refine_search_terms(research_plan)
+
+            # Save the research plan to a file
+            self._save_research_plan(research_plan)
+
+            # Log planning completion
+            log._LOGGER.info(json.dumps({
+                "phase": "planning_complete",
+                "categories": list(research_plan.keys()),
+                "total_search_terms": sum(len(plan["search_terms"]) for plan in research_plan.values())
+            }))
+
+            return research_plan
 
     def _extract_all_original_urls(self) -> List[str]:
         """Extract all URLs from the original data.
@@ -162,7 +241,13 @@ class PlannerAgent:
 
             for category, plan in batch:
                 user_message += f"CATEGORY: {category}\n"
-                user_message += f"TERMS: {', '.join(plan['search_terms'])}\n\n"
+                user_message += f"TERMS: {', '.join(plan['search_terms'])}\n"
+
+                # Include synonyms if available
+                if "synonyms" in plan:
+                    user_message += f"SYNONYMS: {', '.join(plan['synonyms'])}\n"
+
+                user_message += "\n"
 
             user_message += "For each category, return the improved terms in this format:\n"
             user_message += "CATEGORY: [category name]\n"
@@ -191,10 +276,29 @@ class PlannerAgent:
                     if "gpt-4o" not in self.model:
                         api_params["temperature"] = 0.5
 
+                    # Measure response time
+                    start_time = time.perf_counter()
+
                     # Make the API call
                     response = self.client.chat.completions.create(**api_params)
 
-                    # Log the API call
+                    # Calculate latency and add tokens to cost timer
+                    latency_ms = round((time.perf_counter() - start_time) * 1000)
+                    self.cost_timer.add_tokens(response.usage.total_tokens)
+
+                    # Log the API call with structured data
+                    log._LOGGER.info(json.dumps({
+                        "phase": "query_refinement",
+                        "batch_size": len(batch),
+                        "categories": [c for c, _ in batch],
+                        "prompt_excerpt": system_message[:200],
+                        "completion_excerpt": response.choices[0].message.content[:200],
+                        "latency_ms": latency_ms,
+                        "tokens": response.usage.total_tokens,
+                        "cost_usd": self.cost_tracker.get_cost_for_tokens(self.model, response.usage.total_tokens)
+                    }))
+
+                    # Log the API call to regular logger
                     from src.utils.logger import log_api_call
                     log_api_call(
                         logger=self.logger,
@@ -244,6 +348,14 @@ class PlannerAgent:
                     research_plan[current_category]["search_terms"] = refined_terms[:max_terms]
                     self.logger.info(f"Updated search terms for '{current_category}': {research_plan[current_category]['search_terms']}")
 
+                    # Log term refinement
+                    log._LOGGER.info(json.dumps({
+                        "phase": "term_refinement",
+                        "category": current_category,
+                        "original_terms": research_plan[current_category].get("original_terms", []),
+                        "refined_terms": refined_terms[:max_terms]
+                    }))
+
                 # Start a new category
                 category_part = line.split("CATEGORY:")[1].strip()
                 current_category = category_part
@@ -257,9 +369,21 @@ class PlannerAgent:
 
         # Don't forget to save the last category
         if current_category and refined_terms and current_category in research_plan:
+            # Save original terms for logging
+            if "original_terms" not in research_plan[current_category]:
+                research_plan[current_category]["original_terms"] = research_plan[current_category]["search_terms"].copy()
+
             max_terms = len(research_plan[current_category]["search_terms"])
             research_plan[current_category]["search_terms"] = refined_terms[:max_terms]
             self.logger.info(f"Updated search terms for '{current_category}': {research_plan[current_category]['search_terms']}")
+
+            # Log term refinement
+            log._LOGGER.info(json.dumps({
+                "phase": "term_refinement",
+                "category": current_category,
+                "original_terms": research_plan[current_category].get("original_terms", []),
+                "refined_terms": refined_terms[:max_terms]
+            }))
 
     def _save_research_plan(self, research_plan: Dict[str, Dict]) -> str:
         """Save the research plan to a JSON file.

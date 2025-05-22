@@ -20,6 +20,22 @@ fi
 # Default test repository
 TEST_REPO=${1:-"https://github.com/vinta/awesome-python"}
 
+# Parse additional arguments
+CONTENTS_FILE=""
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --contents)
+            CONTENTS_FILE="$2"
+            shift 2
+            ;;
+        *)
+            # Skip this argument
+            shift
+            ;;
+    esac
+done
+
 # Set up test parameters
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 OUTPUT_DIR="runs/test_${TIMESTAMP}"
@@ -33,15 +49,26 @@ echo "Output directory: $OUTPUT_DIR"
 echo "Wall time: $WALL_TIME seconds"
 echo "Cost ceiling: $COST_CEILING USD"
 echo "Seed: $SEED"
+if [ -n "$CONTENTS_FILE" ]; then
+    echo "Contents file: $CONTENTS_FILE"
+fi
 
 # Run the awesome-researcher
 echo -e "${YELLOW}Running awesome-researcher...${NC}"
-./build-and-run.sh \
-    --repo_url "$TEST_REPO" \
-    --wall_time "$WALL_TIME" \
-    --cost_ceiling "$COST_CEILING" \
-    --output_dir "$OUTPUT_DIR" \
-    --seed "$SEED"
+COMMAND="./build-and-run.sh \
+    --repo_url \"$TEST_REPO\" \
+    --wall_time \"$WALL_TIME\" \
+    --cost_ceiling \"$COST_CEILING\" \
+    --output_dir \"$OUTPUT_DIR\" \
+    --seed \"$SEED\""
+
+# Add contents file if specified
+if [ -n "$CONTENTS_FILE" ]; then
+    COMMAND="$COMMAND --contents \"$CONTENTS_FILE\""
+fi
+
+# Execute the command
+eval $COMMAND
 
 # Check if the run was successful
 if [ $? -ne 0 ]; then
@@ -101,6 +128,19 @@ fi
 cd - > /dev/null
 
 echo -e "${GREEN}updated_list.md passes awesome-lint.${NC}"
+
+# If contents file was specified and it contains adaptive-streaming, check if updated_list.md includes it
+if [ -n "$CONTENTS_FILE" ]; then
+    if grep -q "Adaptive Streaming" "$CONTENTS_FILE"; then
+        echo -e "${YELLOW}Checking for adaptive-streaming content...${NC}"
+        if grep -i -q "adaptive.*streaming" "$OUTPUT_DIR/updated_list.md"; then
+            echo -e "${GREEN}updated_list.md contains at least one item from adaptive-streaming.${NC}"
+        else
+            echo -e "${RED}Error: updated_list.md does not contain any items from adaptive-streaming.${NC}"
+            exit 1
+        fi
+    fi
+fi
 
 # Check semantic uniqueness if sentence_transformers is available
 if python -c "import sentence_transformers" &> /dev/null; then
@@ -178,6 +218,40 @@ else:
     fi
 else
     echo -e "${YELLOW}Warning: sentence_transformers is not available, skipping semantic uniqueness check.${NC}"
+fi
+
+# Check if validation results were logged properly
+echo -e "${YELLOW}Checking validation logs...${NC}"
+if grep -q "\"schema_valid\": *true" "$OUTPUT_DIR/agent.log" && grep -q "\"markdown_lint_pass\": *true" "$OUTPUT_DIR/agent.log"; then
+    echo -e "${GREEN}Schema and Markdown validation logs found and correct.${NC}"
+else
+    echo -e "${RED}Error: Schema or Markdown validation logs missing or incorrect.${NC}"
+    exit 1
+fi
+
+# Check if url validation was performed
+if grep -q "\"url_valid\": *true" "$OUTPUT_DIR/agent.log"; then
+    echo -e "${GREEN}URL validation logs found and correct.${NC}"
+else
+    echo -e "${RED}Error: URL validation logs not found or incorrect.${NC}"
+    exit 1
+fi
+
+# Check if cost_summary.json exists and matches agent.log
+if [ -f "$OUTPUT_DIR/cost_summary.json" ]; then
+    echo -e "${YELLOW}Checking cost_summary.json...${NC}"
+    # Extract total_cost from cost_summary.json
+    COST_SUMMARY_TOTAL=$(grep -o '"total_cost_usd":[^,]*' "$OUTPUT_DIR/cost_summary.json" | cut -d ':' -f2)
+    echo -e "${GREEN}cost_summary.json found with total cost: $COST_SUMMARY_TOTAL USD${NC}"
+else
+    echo -e "${YELLOW}Warning: cost_summary.json not found.${NC}"
+fi
+
+# Check if a git branch was created and commit was made
+if grep -q "branch=" "$OUTPUT_DIR/agent.log" && grep -q "commit=" "$OUTPUT_DIR/agent.log"; then
+    echo -e "${GREEN}Git branch and commit logs found.${NC}"
+else
+    echo -e "${YELLOW}Warning: Git branch and commit logs not found.${NC}"
 fi
 
 # Check if re-running the process adds no new links
