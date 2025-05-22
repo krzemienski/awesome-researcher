@@ -1,0 +1,64 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+Cursor Rules · Awesome‑List Researcher (Aligned with Spec v6)
+
+Goal — Provide strict automation guidance so every Cursor‑driven change respects MCP context, branching hygiene, cost/time limits, and the v6 acceptance criteria (≥ 10 unique links + visualization).
+
+⸻
+
+1 · Mandatory MCP Workflow
+	1.	Context 7 — Load at the start of every task.
+	2.	Sequence‑Thinking MCP — Enable for chain‑of‑thought planning.
+	3.	memory MCP server — Persist and retrieve long‑term project state.
+	4.	Discovery — Query ContextStore, FileGraph, DependencyGraph, or any new MCP utilities; load them when relevant.
+	5.	Repo Scan — Enumerate all files before edits; refresh graphs after creating or deleting files.
+
+⸻
+
+2 · Git Discipline
+	•	Create feature branches (feat/parser, feat/term-expander, fix/dedup, etc.).
+	•	Atomic commits (feat(dedup): add Levenshtein filter).
+	•	Run ./build-and-run.sh + tests/run_e2e.sh inside Docker; merge only if green.
+	•	Squash‑merge, delete branch.
+	•	Never commit runtime artifacts (runs/, logs, embeddings).
+	•	End each PR with actionable cursor.task: notes.
+⸻
+
+3 · Execution Rules
+	•	Container‑only: All commands via ./build-and-run.sh.
+	•	Enforce --cost_ceiling & --wall_time; abort gracefully near limits.
+	•	Default models: planner/expander gpt-4.1, researchers & validator o3; allow overrides via --model_*.
+	•	Category agents must use BrowserTool for live scraping.
+	•	Logs: ISO timestamps, tokens, cost USD, full prompt & completion per call.
+	•	Apply four‑layer dedup engine (case, Levenshtein ≤ 2, canonical URL, semantic ≥ 0.85).
+
+⸻
+
+4 · Acceptance‑Criteria Awareness
+
+Cursor must self‑validate against these gates before merge:
+	1.	Pipeline adds ≥ 10 new unique links (passes four‑layer dedup + cosine < 0.85).
+	2.	awesome-lint green on final Markdown.
+	3.	Logs capture prompt, completion, tokens, cost for every API call.
+	4.	Duplicate discard ratio ≤ 30 %.
+	5.	Sequence diagram (Mermaid) saved to architecture.md reflects actual agent calls.
+	6.	Re‑run is idempotent—no further additions.
+
+⸻
+
+5 · Prohibited Actions
+	•	No GitHub API calls whatsoever.
+	•	No sample output directories in Git.
+	•	No mocks / placeholders — all HTTP & OpenAI calls must be live.
+
+⸻
+
+6 · Documentation Sync
+	•	If CLI flags, agent flow, or outputs change, update README.md and architecture.md in the same branch.
+
+⸻
+
+Follow these rules for every Cursor iteration to maintain a clean, spec‑compliant codebase.

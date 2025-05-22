@@ -1,45 +1,46 @@
 # Contributing
 
-Thank you for your interest in contributing to this awesome list! This document provides guidelines to ensure all contributions are consistent with the list's quality standards.
+Thank you for considering contributing to this awesome list! Your contributions help make this resource better for everyone.
 
-## Criteria for Adding Resources
+## Guidelines
 
-Please ensure any resource you suggest meets the following criteria:
+Please ensure your contribution follows these guidelines:
 
-- **Relevance**: Must be directly related to the list's topic
-- **Quality**: Must be well-documented, maintained, and valuable to the community
-- **Active**: Must not be abandoned (no updates in >2 years) unless it's complete
-- **Accessibility**: Must be freely accessible via HTTPS
-- **Popularity**: Should have at least 100 GitHub stars (or equivalent metric) if it's a repository
-- **Format**: Must follow the established format of this list
+- Search previous suggestions before making a new one to avoid duplicates.
+- Make an individual pull request for each suggestion.
+- Use the following format: `* [Name](URL) - Description.`
+- Keep descriptions short and simple, but descriptive (maximum 100 characters).
+- End all descriptions with a full stop/period.
+- Check your spelling and grammar.
+- Make sure your text editor is set to remove trailing whitespace.
+- New categories or improvements to the existing categorization are welcome.
+- HTTPS links are preferred over HTTP links.
 
-## Format Guidelines
+## Adding Something to the List
 
-1. Resources must be added in alphabetical order within their category
-2. Use the following format:
-   ```
-   * [Name](URL) - Brief description (less than 100 characters)
-   ```
-3. Descriptions should:
-   - Begin with a capital letter
-   - End without a period
-   - Be concise but informative
-   - Not use promotional language
+If you have something awesome to contribute to the list, this is how you do it:
 
-4. Use HTTPS links when available
+1. Fork this repository.
+2. Add your suggestion to the appropriate section in the README.md file.
+   - Keep the list alphabetical within each category.
+   - Use the format: `* [Name](URL) - Description.`
+   - Ensure the description is concise (≤ 100 characters).
+   - Make sure the link is working and points to the correct location.
+   - Add a link to the GitHub repository if available.
+3. Commit your changes with a clear and descriptive commit message.
+4. Push your changes to your fork.
+5. Submit a pull request.
 
-## How to Contribute
+## Updating Your Pull Request
 
-1. Fork the repository
-2. Add your suggestion following the guidelines above
-3. Submit a pull request with a descriptive title and explanation
+If a maintainer asks you to edit your pull request before it can be included:
 
-## What to Avoid
+1. You can edit your pull request directly through the GitHub web interface if the changes are simple.
+2. If more substantial changes are needed, you can:
+   - Amend your commit(s) and force push to your GitHub repository:
+     ```bash
+     git commit --amend
+     git push --force
+     ```
 
-- Promotional language in descriptions
-- Subjective claims (e.g., "the best", "amazing")
-- Duplicates or very similar resources
-- Links to non-free products without clearly stating limitations
-- Resources that don't follow the list's formatting rules
-
-Thank you for helping to make this awesome list even better!
+Thank you for your suggestions!

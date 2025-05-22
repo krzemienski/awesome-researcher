@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AwesomeList",
+  "description": "Schema for Awesome List JSON data",
+  "type": "object",
+  "required": ["title", "sections"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "The title of the awesome list"
+    },
+    "tagline": {
+      "type": "string",
+      "description": "A brief tagline or description of the awesome list"
+    },
+    "sections": {
+      "type": "array",
+      "description": "List of sections/categories in the awesome list",
+      "items": {
+        "type": "object",
+        "required": ["name", "items"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the section/category"
+          },
+          "items": {
+            "type": "array",
+            "description": "List of resources in this section/category",
+            "items": {
+              "type": "object",
+              "required": ["name", "url"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Name of the resource"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "URL of the resource"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Description of the resource",
+                  "maxLength": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

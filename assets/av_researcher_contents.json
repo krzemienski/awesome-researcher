@@ -1,0 +1,95 @@
+{
+  "title": "Awesome Video",
+  "categories": [
+    {
+      "name": "Adaptive Streaming",
+      "synonyms": ["dash streaming", "hls streaming", "dynamic streaming", "adaptive bitrate"],
+      "examples": [
+        "Video.js",
+        "Shaka Player",
+        "MPEG-DASH",
+        "HLS.js"
+      ]
+    },
+    {
+      "name": "Codecs",
+      "synonyms": ["video compression", "video encoding", "video format"],
+      "examples": [
+        "H.264/AVC",
+        "H.265/HEVC",
+        "VP9",
+        "AV1"
+      ]
+    },
+    {
+      "name": "Live Streaming",
+      "synonyms": ["live broadcast", "video broadcast", "rtmp streaming", "live video"],
+      "examples": [
+        "OBS Studio",
+        "FFmpeg",
+        "Wowza",
+        "nginx-rtmp-module"
+      ]
+    },
+    {
+      "name": "Player Libraries",
+      "synonyms": ["video player", "media player", "video playback"],
+      "examples": [
+        "Video.js",
+        "Plyr",
+        "JW Player",
+        "MediaElement.js"
+      ]
+    },
+    {
+      "name": "Video Analytics",
+      "synonyms": ["video insights", "playback metrics", "viewer analytics"],
+      "examples": [
+        "Mux Data",
+        "Google Analytics for Video",
+        "Bitmovin Analytics",
+        "Conviva"
+      ]
+    },
+    {
+      "name": "Video APIs",
+      "synonyms": ["video platform api", "video sdk", "video processing api"],
+      "examples": [
+        "Mux",
+        "Cloudflare Stream",
+        "Twilio Video",
+        "Agora.io"
+      ]
+    },
+    {
+      "name": "Video Capture",
+      "synonyms": ["screen recording", "video recording", "webcam capture"],
+      "examples": [
+        "OBS Studio",
+        "RecordRTC",
+        "navigator.mediaDevices",
+        "Captura"
+      ]
+    },
+    {
+      "name": "Video Editing",
+      "synonyms": ["video post-processing", "non-linear editing", "video cutting"],
+      "examples": [
+        "FFmpeg",
+        "LosslessCut",
+        "Shotcut",
+        "Olive"
+      ]
+    },
+    {
+      "name": "WebRTC",
+      "synonyms": ["p2p video", "real-time communication", "video chat"],
+      "examples": [
+        "simple-peer",
+        "PeerJS",
+        "MediaSoup",
+        "Jitsi"
+      ]
+    }
+  ]
+}

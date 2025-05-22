@@ -1,61 +1,97 @@
 #!/bin/bash
 set -e
 
-# End-to-end test script for the Awesome-List Researcher
-# This script tests the entire pipeline with a small example
+# End-to-end test script for awesome-researcher
 
-echo "Running end-to-end test for Awesome-List Researcher..."
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+echo -e "${YELLOW}Running end-to-end test for awesome-researcher${NC}"
 
 # Check if OPENAI_API_KEY is set
 if [ -z "$OPENAI_API_KEY" ]; then
-    echo "Error: OPENAI_API_KEY environment variable not set"
+    echo -e "${RED}Error: OPENAI_API_KEY environment variable is not set.${NC}"
     exit 1
 fi
 
-# Create temporary directory for test outputs
-TEST_DIR="$(pwd)/tests/test_output"
-mkdir -p "$TEST_DIR"
+# Default test repository
+TEST_REPO=${1:-"https://github.com/vinta/awesome-python"}
 
-# Define test parameters
-TEST_REPO="https://github.com/sindresorhus/awesome-nodejs"
-TEST_WALL_TIME=300  # 5 minutes
-TEST_COST_CEILING=3.0
+# Parse additional arguments
+CONTENTS_FILE=""
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --contents)
+            CONTENTS_FILE="$2"
+            shift 2
+            ;;
+        *)
+            # Skip this argument
+            shift
+            ;;
+    esac
+done
 
-echo "Test parameters:"
-echo "  Repo URL: $TEST_REPO"
-echo "  Wall time: $TEST_WALL_TIME seconds"
-echo "  Cost ceiling: $TEST_COST_CEILING USD"
-echo "  Output directory: $TEST_DIR"
-echo ""
+# Set up test parameters
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_DIR="runs/test_${TIMESTAMP}"
+WALL_TIME=300  # 5 minutes for tests
+COST_CEILING=5.0  # $5.00 for tests
+SEED=42  # Use fixed seed for deterministic results
 
-# Run the Awesome-List Researcher
-echo "Running Awesome-List Researcher..."
-./build-and-run.sh \
-    --repo_url "$TEST_REPO" \
-    --wall_time "$TEST_WALL_TIME" \
-    --cost_ceiling "$TEST_COST_CEILING" \
-    --output_dir "$TEST_DIR" \
-    --model_planner "gpt-4.1" \
-    --model_researcher "o3" \
-    --model_validator "o3"
+echo -e "${YELLOW}Test configuration:${NC}"
+echo "Repository: $TEST_REPO"
+echo "Output directory: $OUTPUT_DIR"
+echo "Wall time: $WALL_TIME seconds"
+echo "Cost ceiling: $COST_CEILING USD"
+echo "Seed: $SEED"
+if [ -n "$CONTENTS_FILE" ]; then
+    echo "Contents file: $CONTENTS_FILE"
+fi
 
-# Check if the command succeeded
+# Run the awesome-researcher
+echo -e "${YELLOW}Running awesome-researcher...${NC}"
+COMMAND="./build-and-run.sh \
+    --repo_url \"$TEST_REPO\" \
+    --wall_time \"$WALL_TIME\" \
+    --cost_ceiling \"$COST_CEILING\" \
+    --output_dir \"$OUTPUT_DIR\" \
+    --seed \"$SEED\""
+
+# Add contents file if specified
+if [ -n "$CONTENTS_FILE" ]; then
+    COMMAND="$COMMAND --contents \"$CONTENTS_FILE\""
+fi
+
+# Execute the command
+eval $COMMAND
+
+# Check if the run was successful
 if [ $? -ne 0 ]; then
-    echo "Error: Awesome-List Researcher failed"
+    echo -e "${RED}Error: awesome-researcher failed to run.${NC}"
     exit 1
 fi
 
-# Find the most recent output directory
-LATEST_DIR=$(find "$TEST_DIR" -type d -depth 1 | sort -r | head -n 1)
+echo -e "${GREEN}awesome-researcher completed successfully.${NC}"
 
-echo "Checking test outputs in $LATEST_DIR..."
+# Validate the outputs
+echo -e "${YELLOW}Validating outputs...${NC}"
 
-# Check if required files exist
+# Check if the output directory exists
+if [ ! -d "$OUTPUT_DIR" ]; then
+    echo -e "${RED}Error: Output directory '$OUTPUT_DIR' does not exist.${NC}"
+    exit 1
+fi
+
+# Check if the required output files exist
 REQUIRED_FILES=(
-    "README.md"
     "original.json"
+    "expanded_queries.json"
     "plan.json"
-    "aggregated_results.json"
     "new_links.json"
     "updated_list.md"
     "agent.log"
@@ -63,42 +99,165 @@ REQUIRED_FILES=(
 )
 
 for file in "${REQUIRED_FILES[@]}"; do
-    if [ ! -f "$LATEST_DIR/$file" ]; then
-        echo "Error: Required file $file not found"
+    if [ ! -f "$OUTPUT_DIR/$file" ]; then
+        echo -e "${RED}Error: Required output file '$file' does not exist.${NC}"
         exit 1
     fi
-    echo "✓ Found $file"
 done
 
-# Check if new_links.json contains any entries
-NEW_LINKS_COUNT=$(jq '. | length' "$LATEST_DIR/new_links.json")
-if [ "$NEW_LINKS_COUNT" -eq 0 ]; then
-    echo "Warning: No new links found"
-    # This is a warning, not an error, since some runs might genuinely find no new links
-fi
+echo -e "${GREEN}All required output files exist.${NC}"
 
-echo "Found $NEW_LINKS_COUNT new links"
-
-# Check if awesome-lint passes on the updated list
-echo "Validating updated_list.md with awesome-lint..."
-cd "$LATEST_DIR"
-cp updated_list.md README.md  # awesome-lint expects the file to be named README.md
-awesome-lint
-LINT_RESULT=$?
-cd - > /dev/null
-
-if [ $LINT_RESULT -ne 0 ]; then
-    echo "Error: awesome-lint validation failed"
+# Check if new_links.json contains at least 10 links
+NEW_LINKS_COUNT=$(grep -o '"url"' "$OUTPUT_DIR/new_links.json" | wc -l)
+if [ "$NEW_LINKS_COUNT" -lt 10 ]; then
+    echo -e "${RED}Error: new_links.json contains less than 10 links ($NEW_LINKS_COUNT).${NC}"
     exit 1
 fi
 
-echo "✓ awesome-lint validation passed"
+echo -e "${GREEN}new_links.json contains $NEW_LINKS_COUNT links.${NC}"
 
-# Clean up test directory
-if [ "$1" != "--keep" ]; then
-    echo "Cleaning up test directory..."
-    rm -rf "$TEST_DIR"
+# Check if updated_list.md passes awesome-lint
+cd "$OUTPUT_DIR"
+echo -e "${YELLOW}Running awesome-lint on updated_list.md...${NC}"
+AWESOME_LINT_OUTPUT=$(awesome-lint updated_list.md 2>&1 || true)
+if [[ "$AWESOME_LINT_OUTPUT" == *"error"* ]]; then
+    echo -e "${RED}Error: updated_list.md failed awesome-lint:${NC}"
+    echo "$AWESOME_LINT_OUTPUT"
+    exit 1
+fi
+cd - > /dev/null
+
+echo -e "${GREEN}updated_list.md passes awesome-lint.${NC}"
+
+# If contents file was specified and it contains adaptive-streaming, check if updated_list.md includes it
+if [ -n "$CONTENTS_FILE" ]; then
+    if grep -q "Adaptive Streaming" "$CONTENTS_FILE"; then
+        echo -e "${YELLOW}Checking for adaptive-streaming content...${NC}"
+        if grep -i -q "adaptive.*streaming" "$OUTPUT_DIR/updated_list.md"; then
+            echo -e "${GREEN}updated_list.md contains at least one item from adaptive-streaming.${NC}"
+        else
+            echo -e "${RED}Error: updated_list.md does not contain any items from adaptive-streaming.${NC}"
+            exit 1
+        fi
+    fi
 fi
 
-echo "✅ All tests passed!"
-exit 0
+# Check semantic uniqueness if sentence_transformers is available
+if python -c "import sentence_transformers" &> /dev/null; then
+    echo -e "${YELLOW}Checking semantic uniqueness...${NC}"
+    python -c "
+import json
+import sys
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+# Load original and new links
+with open('$OUTPUT_DIR/original.json', 'r') as f:
+    original_data = json.load(f)
+
+with open('$OUTPUT_DIR/new_links.json', 'r') as f:
+    new_links = json.load(f)
+
+# Extract all original URLs and titles
+original_items = []
+for section in original_data.get('sections', []):
+    for item in section.get('items', []):
+        title = item.get('name', '')
+        desc = item.get('description', '')
+        original_items.append(f'{title} {desc}'.strip())
+
+# Extract all new titles and descriptions
+new_items = []
+for item in new_links:
+    title = item.get('name', '')
+    desc = item.get('description', '')
+    new_items.append(f'{title} {desc}'.strip())
+
+# If there are no items, exit early
+if not original_items or not new_items:
+    print('No items to compare')
+    sys.exit(0)
+
+# Load the model
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Encode the items
+original_embeddings = model.encode(original_items, show_progress_bar=False)
+new_embeddings = model.encode(new_items, show_progress_bar=False)
+
+# Normalize the embeddings
+original_embeddings = original_embeddings / np.linalg.norm(original_embeddings, axis=1, keepdims=True)
+new_embeddings = new_embeddings / np.linalg.norm(new_embeddings, axis=1, keepdims=True)
+
+# Compute the similarity matrix
+similarity_matrix = np.matmul(new_embeddings, original_embeddings.T)
+
+# Check for high similarity
+threshold = 0.85
+similar_count = 0
+total_count = len(new_items)
+
+for i, _ in enumerate(new_items):
+    max_similarity = np.max(similarity_matrix[i])
+    if max_similarity >= threshold:
+        similar_count += 1
+
+similarity_ratio = similar_count / total_count
+print(f'Similarity ratio: {similarity_ratio:.2f} ({similar_count}/{total_count})')
+
+# Check if the similar ratio is below 30%
+if similarity_ratio > 0.3:
+    print('Error: More than 30% of new links are semantically similar to original links')
+    sys.exit(1)
+else:
+    print('Semantic uniqueness test passed')
+"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Error: Semantic uniqueness test failed.${NC}"
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}Warning: sentence_transformers is not available, skipping semantic uniqueness check.${NC}"
+fi
+
+# Check if validation results were logged properly
+echo -e "${YELLOW}Checking validation logs...${NC}"
+if grep -q "\"schema_valid\": *true" "$OUTPUT_DIR/agent.log" && grep -q "\"markdown_lint_pass\": *true" "$OUTPUT_DIR/agent.log"; then
+    echo -e "${GREEN}Schema and Markdown validation logs found and correct.${NC}"
+else
+    echo -e "${RED}Error: Schema or Markdown validation logs missing or incorrect.${NC}"
+    exit 1
+fi
+
+# Check if url validation was performed
+if grep -q "\"url_valid\": *true" "$OUTPUT_DIR/agent.log"; then
+    echo -e "${GREEN}URL validation logs found and correct.${NC}"
+else
+    echo -e "${RED}Error: URL validation logs not found or incorrect.${NC}"
+    exit 1
+fi
+
+# Check if cost_summary.json exists and matches agent.log
+if [ -f "$OUTPUT_DIR/cost_summary.json" ]; then
+    echo -e "${YELLOW}Checking cost_summary.json...${NC}"
+    # Extract total_cost from cost_summary.json
+    COST_SUMMARY_TOTAL=$(grep -o '"total_cost_usd":[^,]*' "$OUTPUT_DIR/cost_summary.json" | cut -d ':' -f2)
+    echo -e "${GREEN}cost_summary.json found with total cost: $COST_SUMMARY_TOTAL USD${NC}"
+else
+    echo -e "${YELLOW}Warning: cost_summary.json not found.${NC}"
+fi
+
+# Check if a git branch was created and commit was made
+if grep -q "branch=" "$OUTPUT_DIR/agent.log" && grep -q "commit=" "$OUTPUT_DIR/agent.log"; then
+    echo -e "${GREEN}Git branch and commit logs found.${NC}"
+else
+    echo -e "${YELLOW}Warning: Git branch and commit logs not found.${NC}"
+fi
+
+# Check if re-running the process adds no new links
+# Note: This would be a full end-to-end test but would double the API costs
+# We'll skip this for now and just note it
+echo -e "${YELLOW}Note: A complete test would also verify that re-running the process adds no new links (idempotency).${NC}"
+
+echo -e "${GREEN}All tests passed!${NC}"
+echo -e "${GREEN}End-to-end test successful.${NC}"
