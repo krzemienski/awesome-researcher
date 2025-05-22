@@ -258,24 +258,19 @@ class DedupEngine:
         # Normalize embeddings
         embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
 
-        # Find duplicates by computing pairwise similarity
+        # Use a more efficient approach to find duplicates
         deduplicated = []
         duplicates = []
-        used_indices = set()
+        deduplicated_embeddings = []
 
+        # Process resources in order, checking each against previously selected unique resources
         for i, (resource, embedding) in enumerate(zip(resources, embeddings)):
-            if i in used_indices:
-                continue
-
             is_duplicate = False
 
-            for j in range(i):
-                if j not in used_indices:
-                    continue
-
+            # Compare only with previously selected unique resources
+            for j, unique_embedding in enumerate(deduplicated_embeddings):
                 # Compute cosine similarity
-                similarity = np.dot(embedding, embeddings[j])
-
+                similarity = np.dot(embedding, unique_embedding)
                 if similarity >= threshold:
                     is_duplicate = True
                     break
@@ -284,7 +279,7 @@ class DedupEngine:
                 duplicates.append(resource)
             else:
                 deduplicated.append(resource)
-                used_indices.add(i)
+                deduplicated_embeddings.append(embedding)
 
         return deduplicated, duplicates
 

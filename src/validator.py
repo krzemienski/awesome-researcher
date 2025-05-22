@@ -23,7 +23,7 @@ class ValidatorAgent:
         logger: logging.Logger,
         output_dir: str,
         cost_tracker: CostTracker,
-        model: str = "o3",
+        model: str = "gpt-4o",
     ):
         """Initialize the validator agent.
 
@@ -191,8 +191,8 @@ class ValidatorAgent:
                     "max_tokens": 100,
                 }
 
-                # Only add temperature for non-o3 models
-                if "o3" not in self.model:
+                # Only add temperature for non-gpt-4o models
+                if "gpt-4o" not in self.model:
                     api_params["temperature"] = 0.3
 
                 # Make the API call

@@ -1,8 +1,10 @@
 import json
 import logging
 import os
+import re
 import time
 from typing import Dict, List, Any, Set, Tuple
+from urllib.parse import urlparse
 
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -20,7 +22,7 @@ class CategoryResearchAgent:
         output_dir: str,
         cost_tracker: CostTracker,
         wall_time_tracker: WallTimeTracker,
-        model: str = "o3",
+        model: str = "gpt-4o",
         list_title: str = "",
     ):
         """Initialize the category research agent.
@@ -71,6 +73,10 @@ class CategoryResearchAgent:
         # Create a clean set of URLs to exclude
         exclude_urls_set = set(exclude_urls)
 
+        # Warn if exclude_urls is empty
+        if not exclude_urls_set:
+            self.logger.warning(f"No URLs provided to exclude for category: {category}. This may result in rediscovering existing resources.")
+
         # Store all discovered resources
         all_resources = []
 
@@ -79,6 +85,13 @@ class CategoryResearchAgent:
         if category in self.category_examples and self.category_examples[category]:
             examples = self.category_examples[category]
             example_items = []
+
+            # Add example URLs to exclude_urls_set to prevent rediscovery
+            for example in examples:
+                example_url = example.get("url", "")
+                if example_url and self._is_valid_url(example_url):
+                    exclude_urls_set.add(example_url)
+
             for i, example in enumerate(examples[:3]):  # Limit to 3 examples to avoid token overload
                 name = example.get("name", "")
                 url = example.get("url", "")
@@ -92,6 +105,8 @@ class CategoryResearchAgent:
                     "\n".join(example_items) +
                     "\n\nFind similar high-quality resources that are not already in the list."
                 )
+
+            self.logger.info(f"Added {len(examples)} example URLs to exclude list for category: {category}")
 
         # Process each search term
         for term_idx, term in enumerate(search_terms):
@@ -153,7 +168,7 @@ class CategoryResearchAgent:
                     continue
 
                 # Make the API call
-                # Don't use temperature parameter for o3 model
+                # Don't use temperature parameter for gpt-4o model
                 api_params = {
                     "model": self.model,
                     "messages": [
@@ -162,8 +177,8 @@ class CategoryResearchAgent:
                     ],
                 }
 
-                # Only add temperature for non-o3 models
-                if self.model != "o3":
+                # Only add temperature for non-gpt-4o models
+                if "gpt-4o" not in self.model:
                     api_params["temperature"] = 0.7
 
                 response = self.client.chat.completions.create(**api_params)
@@ -194,12 +209,19 @@ class CategoryResearchAgent:
 
                 # Add discovered resources to the list
                 for resource in resources:
+                    resource_url = resource.get("url", "")
+
+                    # Skip resources with invalid URLs
+                    if not resource_url or not self._is_valid_url(resource_url):
+                        self.logger.warning(f"Skipping resource with invalid URL: {resource_url}")
+                        continue
+
                     # Skip resources with URLs in the exclude list
-                    if resource.get("url") in exclude_urls_set:
+                    if resource_url in exclude_urls_set:
                         continue
 
                     # Add to the exclude set to avoid duplicates in future terms
-                    exclude_urls_set.add(resource.get("url"))
+                    exclude_urls_set.add(resource_url)
 
                     # Add the resource to the results
                     all_resources.append(resource)
@@ -230,48 +252,269 @@ class CategoryResearchAgent:
         resources = []
 
         try:
-            # Look for patterns like "Title: X\nURL: Y\nDescription: Z"
-            lines = content.split('\n')
-            current_resource = {}
+            # First attempt: Try to parse as JSON if content appears to be JSON
+            json_resources = self._try_parse_json(content)
+            if json_resources:
+                self.logger.info(f"Successfully parsed content as JSON, found {len(json_resources)} resources")
+                return json_resources
 
-            for line in lines:
-                line = line.strip()
+            # Second attempt: Try to parse using regex patterns for different formats
+            regex_resources = self._try_parse_with_regex(content)
+            if regex_resources:
+                self.logger.info(f"Successfully parsed content with regex, found {len(regex_resources)} resources")
+                return regex_resources
 
-                if line.startswith("Title:") or line.startswith("- Title:"):
-                    # Save the previous resource if we have a complete one
-                    if current_resource.get("name") and current_resource.get("url"):
-                        # Ensure we have a description
-                        if "description" not in current_resource:
-                            current_resource["description"] = ""
-
-                        resources.append(current_resource)
-
-                    # Start a new resource
-                    current_resource = {"name": line.split(":", 1)[1].strip()}
-
-                elif line.startswith("URL:") or line.startswith("- URL:"):
-                    if current_resource:  # Only if we have a current resource
-                        current_resource["url"] = line.split(":", 1)[1].strip()
-
-                elif line.startswith("Description:") or line.startswith("- Description:"):
-                    if current_resource:  # Only if we have a current resource
-                        description = line.split(":", 1)[1].strip()
-                        # Truncate description to max 100 characters
-                        current_resource["description"] = description[:100]
-
-            # Add the last resource if it's complete
-            if current_resource.get("name") and current_resource.get("url"):
-                # Ensure we have a description
-                if "description" not in current_resource:
-                    current_resource["description"] = ""
-
-                resources.append(current_resource)
+            # Third attempt: Fall back to line-by-line parsing (original method)
+            resources = self._parse_line_by_line(content)
 
         except Exception as e:
             self.logger.error(f"Error parsing results: {str(e)}")
 
         self.logger.info(f"Parsed {len(resources)} resources from response")
         return resources
+
+    def _try_parse_json(self, content: str) -> List[Dict]:
+        """Try to parse the content as JSON.
+
+        Args:
+            content: The content to parse
+
+        Returns:
+            List of resources if successful, empty list otherwise
+        """
+        resources = []
+        # Look for JSON-like content (anything between [ ] or { })
+        json_pattern = r'(\[[\s\S]*\]|\{[\s\S]*\})'
+        json_matches = re.findall(json_pattern, content)
+
+        for json_str in json_matches:
+            try:
+                data = json.loads(json_str)
+
+                # Handle different JSON structures
+                if isinstance(data, list):
+                    for item in data:
+                        resource = self._normalize_resource_dict(item)
+                        if resource:
+                            resources.append(resource)
+                elif isinstance(data, dict):
+                    # Check if this is a single resource or a container
+                    if any(key.lower() in ['name', 'title', 'url'] for key in data.keys()):
+                        resource = self._normalize_resource_dict(data)
+                        if resource:
+                            resources.append(resource)
+                    else:
+                        # Might be a container with multiple resources
+                        for key, value in data.items():
+                            if isinstance(value, dict):
+                                resource = self._normalize_resource_dict(value)
+                                if resource:
+                                    resources.append(resource)
+                            elif isinstance(value, list):
+                                for item in value:
+                                    if isinstance(item, dict):
+                                        resource = self._normalize_resource_dict(item)
+                                        if resource:
+                                            resources.append(resource)
+            except json.JSONDecodeError:
+                continue  # Not valid JSON, move to next match
+
+            # If we found resources, return them
+            if resources:
+                return resources
+
+        return []
+
+    def _try_parse_with_regex(self, content: str) -> List[Dict]:
+        """Try to parse content using various regex patterns.
+
+        Args:
+            content: The content to parse
+
+        Returns:
+            List of resources if successful, empty list otherwise
+        """
+        resources = []
+
+        # Pattern to match multi-line resources with various prefixes
+        # This handles numbered lists, bullet points, etc.
+        resource_pattern = r'(?:^|\n)(?:\d+\.|\*|\-|\+)?\s*(?:[Tt]itle|[Nn]ame)\s*:(.+?)(?:\n|\r\n?)(?:\d+\.|\*|\-|\+)?\s*(?:[Uu][Rr][Ll])\s*:(.+?)(?:\n|\r\n?)(?:\d+\.|\*|\-|\+)?\s*(?:[Dd]escription)\s*:(.+?)(?:\n\n|\n(?=\d+\.|\*|\-|\+|\Z)|$)'
+
+        # Alternative pattern for bulleted list items
+        bulleted_pattern = r'(?:^|\n)(?:\d+\.|\*|\-|\+)?\s*\[([^\]]+)\]\(([^)]+)\)(?:\s*[-–]\s*|\s*:\s*)(.+?)(?=\n(?:\d+\.|\*|\-|\+)|\n\n|\Z)'
+
+        # Alternative pattern for resource blocks with no specific prefix/format
+        block_pattern = r'(?:^|\n)((?:[A-Z][A-Za-z0-9\s]+){1,4})(?:\s*[-–:]\s*)(.+?)(?:\n|\r\n?)(?:(?:https?:\/\/|www\.)[^\s]+)(?:\s*[-–:]\s*)(.+?)(?=\n\n|\Z)'
+
+        # Try the main pattern first
+        matches = re.finditer(resource_pattern, content, re.DOTALL)
+        for match in matches:
+            name = match.group(1).strip()
+            url = match.group(2).strip()
+            description = match.group(3).strip()
+
+            if name and url:
+                resources.append({
+                    "name": name,
+                    "url": url,
+                    "description": description[:100] if description else ""
+                })
+
+        # If no matches, try the bulleted pattern
+        if not resources:
+            matches = re.finditer(bulleted_pattern, content, re.DOTALL)
+            for match in matches:
+                name = match.group(1).strip()
+                url = match.group(2).strip()
+                description = match.group(3).strip()
+
+                if name and url:
+                    resources.append({
+                        "name": name,
+                        "url": url,
+                        "description": description[:100] if description else ""
+                    })
+
+        # If still no matches, try the block pattern
+        if not resources:
+            matches = re.finditer(block_pattern, content, re.DOTALL)
+            for match in matches:
+                name = match.group(1).strip()
+                url_desc = match.group(2).strip()
+                extra = match.group(3).strip()
+
+                # Try to extract URL from the second group using regex
+                url_match = re.search(r'(https?://\S+)', url_desc)
+                url = url_match.group(1) if url_match else ""
+
+                # If no URL found in second group, try the third group
+                if not url:
+                    url_match = re.search(r'(https?://\S+)', extra)
+                    url = url_match.group(1) if url_match else ""
+
+                # Set description based on which group contained the URL
+                description = extra if url_match and url_match.group(1) in url_desc else url_desc
+
+                if name and url:
+                    resources.append({
+                        "name": name,
+                        "url": url,
+                        "description": description[:100] if description else ""
+                    })
+
+        return resources
+
+    def _parse_line_by_line(self, content: str) -> List[Dict]:
+        """Parse content line by line (original method).
+
+        Args:
+            content: The content to parse
+
+        Returns:
+            List of resources
+        """
+        resources = []
+        lines = content.split('\n')
+        current_resource = {}
+
+        # Common prefixes that might appear before title/url/description
+        prefixes = ['', '- ', '* ', '+ ', '1. ', '2. ', '3. ', '4. ', '5. ', '6. ', '7. ', '8. ', '9. ', '10. ']
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check for title/name in various formats
+            title_match = False
+            for prefix in prefixes:
+                for title_key in ['Title:', 'Name:']:
+                    if line.startswith(f"{prefix}{title_key}"):
+                        # Save previous resource if complete
+                        if current_resource.get("name") and current_resource.get("url"):
+                            if "description" not in current_resource:
+                                current_resource["description"] = ""
+                            resources.append(current_resource.copy())
+
+                        # Start new resource
+                        title_value = line[len(prefix)+len(title_key):].strip()
+                        current_resource = {"name": title_value}
+                        title_match = True
+                        break
+                if title_match:
+                    break
+
+            # If not a title, check for URL
+            if not title_match:
+                url_match = False
+                for prefix in prefixes:
+                    if line.startswith(f"{prefix}URL:"):
+                        if current_resource:  # Only if we have a current resource
+                            current_resource["url"] = line[len(prefix)+4:].strip()
+                            url_match = True
+                            break
+
+                # If not a URL, check for description
+                if not url_match:
+                    for prefix in prefixes:
+                        if line.startswith(f"{prefix}Description:"):
+                            if current_resource:  # Only if we have a current resource
+                                description = line[len(prefix)+12:].strip()
+                                # Truncate description to max 100 characters
+                                current_resource["description"] = description[:100]
+                                break
+
+        # Add the last resource if it's complete
+        if current_resource.get("name") and current_resource.get("url"):
+            if "description" not in current_resource:
+                current_resource["description"] = ""
+            resources.append(current_resource)
+
+        return resources
+
+    def _normalize_resource_dict(self, data: Dict) -> Dict:
+        """Normalize resource dictionary keys to standard format.
+
+        Args:
+            data: Dictionary containing resource data
+
+        Returns:
+            Normalized resource dictionary or None if invalid
+        """
+        if not isinstance(data, dict):
+            return None
+
+        # Map common key variations to our standard keys
+        key_mappings = {
+            'name': ['name', 'title', 'resource', 'tool'],
+            'url': ['url', 'link', 'href'],
+            'description': ['description', 'desc', 'summary', 'about']
+        }
+
+        result = {}
+
+        # Process each of our standard keys
+        for std_key, possible_keys in key_mappings.items():
+            # Look for matching keys in data (case-insensitive)
+            for key in data:
+                if key.lower() in possible_keys:
+                    value = data[key]
+                    if isinstance(value, str):
+                        result[std_key] = value
+                        break
+
+        # Check if we have the minimum required fields
+        if 'name' in result and 'url' in result:
+            # Ensure we have a description (even if empty)
+            if 'description' not in result:
+                result['description'] = ""
+
+            # Truncate description to max 100 characters
+            result['description'] = result['description'][:100]
+
+            return result
+
+        return None
 
     def _save_results(self, category: str, resources: List[Dict]) -> str:
         """Save the research results to a JSON file.
@@ -292,3 +535,18 @@ class CategoryResearchAgent:
 
         self.logger.info(f"Saved {len(resources)} resources for '{category}' to {output_path}")
         return output_path
+
+    def _is_valid_url(self, url: str) -> bool:
+        """Check if a URL is valid.
+
+        Args:
+            url: URL to validate
+
+        Returns:
+            True if URL is valid, False otherwise
+        """
+        try:
+            result = urlparse(url)
+            return all([result.scheme, result.netloc])
+        except Exception:
+            return False

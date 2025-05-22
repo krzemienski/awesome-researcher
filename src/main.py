@@ -34,8 +34,8 @@ def parse_arguments():
     parser.add_argument("--output_dir", default="runs", help="Output directory (default: runs)")
     parser.add_argument("--seed", type=int, help="Random seed for deterministic behavior")
     parser.add_argument("--model_planner", default="gpt-4.1", help="Model to use for planner agent (default: gpt-4.1)")
-    parser.add_argument("--model_researcher", default="o3", help="Model to use for researcher agent (default: o3)")
-    parser.add_argument("--model_validator", default="o3", help="Model to use for validator agent (default: o3)")
+    parser.add_argument("--model_researcher", default="gpt-4o", help="Model to use for researcher agent (default: gpt-4o)")
+    parser.add_argument("--model_validator", default="gpt-4o", help="Model to use for validator agent (default: gpt-4o)")
 
     return parser.parse_args()
 

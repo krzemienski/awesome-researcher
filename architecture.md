@@ -13,11 +13,11 @@ sequenceDiagram
     participant Parser   as awesome_parser.py
     participant Expander as TermExpanderAgent (gpt‑4.1)
     participant Planner  as PlannerAgent (gpt‑4.1)
-    participant Cat1     as CategoryAgent[1] (o3)
-    participant CatN     as CategoryAgent[N] (o3)
+    participant Cat1     as CategoryAgent[1] (gpt-4o)
+participant CatN     as CategoryAgent[N] (gpt-4o)
     participant Agg      as Aggregator
     participant Dedup    as DedupEngine
-    participant Val      as Validator (o3)
+    participant Val      as Validator (gpt-4o)
     participant Rend     as renderer.py
 
     Parser->>Expander: categories + exemplar titles
@@ -67,7 +67,7 @@ sequenceDiagram
 ### 4. Category Research Agent
 
 - **Path:** `src/category_agent.py`
-- **Model:** o3
+- **Model:** gpt-4o
 - **Responsibility:** Research specific categories using OpenAI's Assistants API
 - **Key Features:**
   - Search and browser tools
@@ -87,7 +87,7 @@ sequenceDiagram
 ### 6. Validator Agent
 
 - **Path:** `src/validator.py`
-- **Model:** o3
+- **Model:** gpt-4o
 - **Responsibility:** Validate discovered resources and trim descriptions
 - **Key Features:**
   - URL validation with HTTP HEAD requests
@@ -150,5 +150,5 @@ All runtime artifacts are stored in the `runs/<timestamp>/` directory:
 - `--output_dir` (default: "runs") - Output directory
 - `--seed` (optional) - Random seed for deterministic behavior
 - `--model_planner` (default: "gpt-4.1") - Model to use for planner agent
-- `--model_researcher` (default: "o3") - Model to use for researcher agent
-- `--model_validator` (default: "o3") - Model to use for validator agent
+- `--model_researcher` (default: "gpt-4o") - Model to use for researcher agent
+- `--model_validator` (default: "gpt-4o") - Model to use for validator agent

@@ -138,40 +138,46 @@ class PlannerAgent:
         Args:
             research_plan: Research plan dictionary
         """
-        for category, plan in list(research_plan.items()):
-            # Skip if no search terms
-            if not plan["search_terms"]:
+        # Prepare batches of categories to process together
+        batch_size = 5  # Process multiple categories in one API call
+        categories_with_terms = [(category, plan) for category, plan in research_plan.items()
+                                if plan.get("search_terms")]
+
+        for i in range(0, len(categories_with_terms), batch_size):
+            batch = categories_with_terms[i:i+batch_size]
+            if not batch:
                 continue
 
-            self.logger.info(f"Refining search terms for category: {category}")
+            self.logger.info(f"Refining search terms for batch of {len(batch)} categories")
 
-            # Prepare the system message
+            # Prepare the system message for the batch
             system_message = (
-                f"You are a search query optimization assistant for researching '{category}' resources. "
-                "Your task is to refine the provided search terms to maximize the discovery of new, "
-                "high-quality resources that are not already in our list."
+                "You are a search query optimization assistant. "
+                "Your task is to refine the provided search terms for multiple categories "
+                "to maximize the discovery of new, high-quality resources."
             )
 
-            # Prepare the user message
-            user_message = (
-                f"I need to refine these search terms for discovering new '{category}' resources: "
-                f"{', '.join(plan['search_terms'])}. "
-                f"\n\nPlease improve these {len(plan['search_terms'])} search terms to make them more specific "
-                "and effective at finding new, high-quality resources. The improved terms should be "
-                "focused enough to yield relevant results but diverse enough to cover different aspects "
-                "of the category. Return just the list of improved terms, one per line, without numbering."
-            )
+            # Prepare the user message with all categories in this batch
+            user_message = "I need to refine search terms for multiple categories. For each category, please improve the terms to make them more specific and effective at finding new, high-quality resources.\n\n"
+
+            for category, plan in batch:
+                user_message += f"CATEGORY: {category}\n"
+                user_message += f"TERMS: {', '.join(plan['search_terms'])}\n\n"
+
+            user_message += "For each category, return the improved terms in this format:\n"
+            user_message += "CATEGORY: [category name]\n"
+            user_message += "REFINED_TERMS:\n- [term 1]\n- [term 2]\n- [term 3]\n\n"
 
             # Estimate tokens for cost ceiling check
             estimated_tokens = estimate_tokens_from_string(system_message + user_message) * 2
 
             if self.cost_tracker.would_exceed_ceiling(self.model, estimated_tokens):
-                self.logger.warning(f"Skipping term refinement for '{category}' due to cost ceiling")
+                self.logger.warning(f"Skipping term refinement for batch due to cost ceiling")
                 continue
 
             try:
                 # Use timeout to prevent hanging
-                with timeout(30):
+                with timeout(60):  # Increased timeout for batch processing
                     # Prepare API parameters
                     api_params = {
                         "model": self.model,
@@ -181,8 +187,8 @@ class PlannerAgent:
                         ],
                     }
 
-                    # Only add temperature for non-o3 models
-                    if "o3" not in self.model:
+                    # Only add temperature for non-gpt-4o models
+                    if "gpt-4o" not in self.model:
                         api_params["temperature"] = 0.5
 
                     # Make the API call
@@ -193,7 +199,7 @@ class PlannerAgent:
                     log_api_call(
                         logger=self.logger,
                         agent="planner",
-                        event="refine_search_terms",
+                        event="refine_search_terms_batch",
                         model=self.model,
                         tokens=response.usage.total_tokens,
                         cost_usd=self.cost_tracker.add_usage(
@@ -208,19 +214,52 @@ class PlannerAgent:
                         completion=response.choices[0].message.content
                     )
 
-                    # Parse the response
+                    # Parse the response for each category
                     content = response.choices[0].message.content.strip()
-                    refined_terms = [term.strip() for term in content.split('\n') if term.strip()]
-
-                    # Update the plan
-                    if refined_terms:
-                        # Replace the search terms with the refined ones, keeping the same count
-                        research_plan[category]["search_terms"] = refined_terms[:len(plan["search_terms"])]
-                        self.logger.info(f"Updated search terms for '{category}': {research_plan[category]['search_terms']}")
+                    self._process_batch_response(content, research_plan, [c for c, _ in batch])
 
             except Exception as e:
-                self.logger.error(f"Error refining search terms for '{category}': {str(e)}")
+                self.logger.error(f"Error refining search terms for batch: {str(e)}")
                 # Keep the original terms on error
+
+    def _process_batch_response(self, content: str, research_plan: Dict[str, Dict], batch_categories: List[str]) -> None:
+        """Process the batched response and update the research plan.
+
+        Args:
+            content: The response content from the API
+            research_plan: The research plan to update
+            batch_categories: List of categories in this batch
+        """
+        current_category = None
+        refined_terms = []
+
+        # Parse the response line by line
+        for line in content.split('\n'):
+            line = line.strip()
+
+            if line.startswith("CATEGORY:"):
+                # If we were processing a category, save its terms
+                if current_category and refined_terms and current_category in research_plan:
+                    max_terms = len(research_plan[current_category]["search_terms"])
+                    research_plan[current_category]["search_terms"] = refined_terms[:max_terms]
+                    self.logger.info(f"Updated search terms for '{current_category}': {research_plan[current_category]['search_terms']}")
+
+                # Start a new category
+                category_part = line.split("CATEGORY:")[1].strip()
+                current_category = category_part
+                refined_terms = []
+
+            elif line.startswith("-") or line.startswith("*") and current_category:
+                # This is a term
+                term = line.lstrip("- *").strip()
+                if term:
+                    refined_terms.append(term)
+
+        # Don't forget to save the last category
+        if current_category and refined_terms and current_category in research_plan:
+            max_terms = len(research_plan[current_category]["search_terms"])
+            research_plan[current_category]["search_terms"] = refined_terms[:max_terms]
+            self.logger.info(f"Updated search terms for '{current_category}': {research_plan[current_category]['search_terms']}")
 
     def _save_research_plan(self, research_plan: Dict[str, Dict]) -> str:
         """Save the research plan to a JSON file.

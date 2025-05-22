@@ -23,7 +23,7 @@ A Docker-first tool that discovers and adds new, unique links to GitHub awesome 
 ### Prerequisites
 
 - Docker
-- OpenAI API key with access to GPT-4.1 (for planner) and o3 (for researcher and validator)
+- OpenAI API key with access to GPT-4.1 (for planner) and GPT-4o (for researcher and validator)
 
 ### Getting Started
 
@@ -63,8 +63,8 @@ The `build-and-run.sh` script handles building the Docker container and running 
   --output_dir custom_runs \
   --seed 42 \
   --model_planner gpt-4.1 \
-  --model_researcher o3 \
-  --model_validator o3
+  --model_researcher gpt-4o \
+--model_validator gpt-4o
 ```
 
 ### Command Line Arguments
@@ -77,8 +77,8 @@ The `build-and-run.sh` script handles building the Docker container and running 
 | `--output_dir` | Output directory | runs/ |
 | `--seed` | Random seed for deterministic behavior | Random |
 | `--model_planner` | Model to use for planner agent | gpt-4.1 |
-| `--model_researcher` | Model to use for researcher agent | o3 |
-| `--model_validator` | Model to use for validator agent | o3 |
+| `--model_researcher` | Model to use for researcher agent | gpt-4o |
+| `--model_validator` | Model to use for validator agent | gpt-4o |
 
 The tool also requires the `OPENAI_API_KEY` environment variable to be set.
 
@@ -105,11 +105,11 @@ sequenceDiagram
     participant Parser   as awesome_parser.py
     participant Expander as TermExpanderAgent (gpt‑4.1)
     participant Planner  as PlannerAgent (gpt‑4.1)
-    participant Cat1     as CategoryAgent[1] (o3)
-    participant CatN     as CategoryAgent[N] (o3)
+    participant Cat1     as CategoryAgent[1] (gpt-4o)
+participant CatN     as CategoryAgent[N] (gpt-4o)
     participant Agg      as Aggregator
     participant Dedup    as DedupEngine
-    participant Val      as Validator (o3)
+    participant Val      as Validator (gpt-4o)
     participant Rend     as renderer.py
 
     Parser->>Expander: categories + exemplar titles

@@ -35,7 +35,7 @@ class TermExpanderAgent:
         self.client = OpenAI()
 
     def expand_queries(
-        self, exemplars: Dict[str, List[str]], max_per_category: int = 5
+        self, exemplars: Dict[str, List[str]], max_per_category: int = 5, original_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, List[str]]:
         """Expand category-specific queries using Responses API.
 

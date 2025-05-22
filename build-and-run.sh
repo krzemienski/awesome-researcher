@@ -21,8 +21,8 @@ COST_CEILING=10
 OUTPUT_DIR="runs"
 SEED=""
 MODEL_PLANNER="gpt-4.1"
-MODEL_RESEARCHER="o3"
-MODEL_VALIDATOR="o3"
+MODEL_RESEARCHER="gpt-4o"
+MODEL_VALIDATOR="gpt-4o"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
